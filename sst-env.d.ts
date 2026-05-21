@@ -22,10 +22,22 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
-    "Api": import("@cloudflare/workers-types").Service
-    "AuthApi": import("@cloudflare/workers-types").Service
-    "AuthStorage": import("@cloudflare/workers-types").KVNamespace
-    "Bucket": import("@cloudflare/workers-types").R2Bucket
+    "Api": {
+      "type": "sst.cloudflare.Worker"
+      "url": string
+    }
+    "AuthApi": {
+      "type": "sst.cloudflare.Worker"
+      "url": string
+    }
+    "AuthStorage": {
+      "namespaceId": string
+      "type": "sst.cloudflare.Kv"
+    }
+    "Bucket": {
+      "name": string
+      "type": "sst.cloudflare.Bucket"
+    }
     "CLOUDFLARE_API_TOKEN": {
       "type": "sst.sst.Secret"
       "value": string
@@ -62,7 +74,10 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
-    "EnterpriseStorage": import("@cloudflare/workers-types").R2Bucket
+    "EnterpriseStorage": {
+      "name": string
+      "type": "sst.cloudflare.Bucket"
+    }
     "FEISHU_APP_ID": {
       "type": "sst.sst.Secret"
       "value": string
@@ -91,6 +106,10 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
+    "GatewayKv": {
+      "namespaceId": string
+      "type": "sst.cloudflare.Kv"
+    }
     "HONEYCOMB_API_KEY": {
       "type": "sst.sst.Secret"
       "value": string
@@ -99,7 +118,9 @@ declare module "sst" {
       "type": "random.index/randomPassword.RandomPassword"
       "value": string
     }
-    "LogProcessor": import("@cloudflare/workers-types").Service
+    "LogProcessor": {
+      "type": "sst.cloudflare.Worker"
+    }
     "R2AccessKey": {
       "type": "sst.sst.Secret"
       "value": string
@@ -132,10 +153,22 @@ declare module "sst" {
       "type": "sst.sst.Linkable"
       "value": string
     }
-    "Stat": import("@cloudflare/workers-types").Service
-    "Teams": {
-      "type": "sst.cloudflare.SolidStart"
+    "Stat": {
+      "type": "sst.cloudflare.Worker"
       "url": string
+    }
+    "Stats": {
+      "type": "sst.aws.SolidStart"
+      "url": string
+    }
+    "StatsDatabase": {
+      "database": string
+      "host": string
+      "password": string
+      "port": number
+      "type": "sst.sst.Linkable"
+      "url": string
+      "username": string
     }
     "Web": {
       "type": "sst.cloudflare.Astro"
@@ -291,10 +324,17 @@ declare module "sst" {
       "type": "sst.sst.Secret"
       "value": string
     }
-    "ZenData": import("@cloudflare/workers-types").R2Bucket
-    "ZenDataNew": import("@cloudflare/workers-types").R2Bucket
+    "ZenData": {
+      "name": string
+      "type": "sst.cloudflare.Bucket"
+    }
+    "ZenDataNew": {
+      "name": string
+      "type": "sst.cloudflare.Bucket"
+    }
   }
 }
+/// <reference path="sst-env.d.ts" />
 
 import "sst"
 export {}

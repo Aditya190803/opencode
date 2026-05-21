@@ -8,6 +8,14 @@ export default $config({
       protect: ["production"].includes(input?.stage),
       home: "cloudflare",
       providers: {
+        aws: {
+          region: "us-east-1",
+          profile: process.env.GITHUB_ACTIONS
+            ? undefined
+            : input.stage === "production"
+              ? "opencode-production"
+              : "opencode-dev",
+        },
         stripe: {
           version: "0.0.28",
           apiKey: process.env.STRIPE_SECRET_KEY!,
@@ -21,6 +29,7 @@ export default $config({
   async run() {
     await import("./infra/app.js")
     const { stat } = await import("./infra/console.js")
+    const stats = await import("./infra/stats.js")
     await import("./infra/enterprise.js")
     if ($app.stage === "production" || $app.stage === "vimtor") {
       await import("./infra/monitoring.js")
@@ -28,6 +37,7 @@ export default $config({
 
     return {
       StatWorkerUrl: stat.url,
+      StatsUrl: stats.app.url,
     }
   },
 })

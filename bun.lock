@@ -627,6 +627,7 @@
       "name": "@opencode-ai/stats-core",
       "version": "1.14.50",
       "dependencies": {
+        "@planetscale/database": "1.19.0",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
       },

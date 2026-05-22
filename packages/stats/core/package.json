@@ -15,11 +15,13 @@
   },
   "scripts": {
     "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
+    "db:migrate": "bun src/migrate.ts",
     "db:push": "drizzle-kit push --config=drizzle.config.ts",
     "db:studio": "drizzle-kit studio --config=drizzle.config.ts",
     "typecheck": "tsgo --noEmit"
   },
   "dependencies": {
+    "@planetscale/database": "1.19.0",
     "drizzle-orm": "catalog:",
     "effect": "catalog:"
   },

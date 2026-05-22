@@ -1,6 +1,10 @@
+import { Client } from "@planetscale/database"
+import { drizzle } from "drizzle-orm/planetscale-serverless"
+import { migrate as drizzleMigrate } from "drizzle-orm/planetscale-serverless/migrator"
 import { Config, ConfigProvider, Effect, Layer, Schema } from "effect"
 import * as Context from "effect/Context"
 import * as schema from "./database/schema"
+import { Resource } from "sst"
 
 export const DatabaseUrl = Schema.NonEmptyString.pipe(Schema.brand("DatabaseUrl"))
 export type DatabaseUrl = typeof DatabaseUrl.Type
@@ -13,9 +17,7 @@ export class DatabaseSettings extends Schema.Class<DatabaseSettings>("DatabaseSe
 const decodeDatabaseSettings = Schema.decodeUnknownSync(DatabaseSettings)
 
 const config = Config.all({
-  url: Config.nonEmptyString("DATABASE_URL").pipe(
-    Config.withDefault("mysql://root:changeme@localhost:3306/opencode_stats"),
-  ),
+  url: Config.nonEmptyString("DATABASE_URL").pipe(Config.withDefault(Resource.StatsDatabase.url)),
   migrationsDir: Config.nonEmptyString("DATABASE_MIGRATIONS_DIR").pipe(Config.withDefault("./migrations")),
 }).pipe(Config.map(decodeDatabaseSettings))
 
@@ -53,7 +55,21 @@ export class MigrationError extends Schema.TaggedErrorClass<MigrationError>()("M
 
 export const migrate = Effect.fn("Database.migrate")(function* () {
   const settings = yield* DatabaseConfig
-  yield* Effect.logInfo("database migrations are not wired yet").pipe(
+  yield* Effect.logInfo("applying database migrations").pipe(
+    Effect.annotateLogs({ migrationsDir: settings.migrationsDir }),
+  )
+  const result = yield* Effect.tryPromise({
+    try: () =>
+      drizzleMigrate(drizzle({ client: new Client({ url: settings.url }) }), {
+        migrationsFolder: settings.migrationsDir,
+      }),
+    catch: (cause) => new MigrationError({ message: "Failed to apply database migrations", cause }),
+  })
+  if (result)
+    return yield* new MigrationError({
+      message: `Failed to initialize database migrations: ${result.exitCode}`,
+    })
+  yield* Effect.logInfo("database migrations complete").pipe(
     Effect.annotateLogs({ migrationsDir: settings.migrationsDir }),
   )
 })

@@ -87,7 +87,7 @@ export const app = new sst.aws.SolidStart("Stats", {
 ////////////////
 
 export const statSync = new sst.aws.Cron("StatsSync", {
-  schedule: "rate(1 hour)",
+  schedule: "rate(1 minute)",
   function: {
     handler: "packages/stats/core/src/cron/stat.handler",
     runtime: "nodejs22.x",

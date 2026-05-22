@@ -295,6 +295,30 @@
   display: grid;
 }
 
+[data-page="rankings"] [data-component="empty-state"] {
+  display: grid;
+  place-content: center;
+  gap: 12px;
+  min-height: 280px;
+  padding: 32px;
+  background: var(--rankings-layer);
+  border: 1px solid var(--rankings-line);
+  color: var(--rankings-muted);
+  text-align: center;
+}
+
+[data-page="rankings"] [data-component="empty-state"] strong {
+  color: var(--rankings-text);
+  font-weight: 600;
+}
+
+[data-page="rankings"] [data-component="empty-state"] p {
+  max-width: 34rem;
+  color: var(--rankings-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 [data-page="rankings"] [data-component="usage-chart"] svg,
 [data-page="rankings"] [data-component="country-map"] svg {
   display: block;

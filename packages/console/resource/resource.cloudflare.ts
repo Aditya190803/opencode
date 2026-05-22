@@ -4,11 +4,15 @@ export { waitUntil } from "cloudflare:workers"
 export const Resource = new Proxy(
   {},
   {
-    get(_target, prop: string) {
+    get(_target, prop: string | symbol) {
+      if (typeof prop !== "string") return undefined
       if (prop in env) {
         // @ts-expect-error
         const value = env[prop]
         return typeof value === "string" ? JSON.parse(value) : value
+      } else if (`SST_RESOURCE_${prop}` in env) {
+        // @ts-expect-error
+        return JSON.parse(env[`SST_RESOURCE_${prop}`])
       } else if (prop === "App") {
         // @ts-expect-error
         return JSON.parse(env.SST_RESOURCE_App)

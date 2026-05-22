@@ -2,9 +2,20 @@ import "sst"
 
 declare module "sst" {
   export interface Resource {
-    HONEYCOMB_API_KEY: {
-      type: "sst.sst.Secret"
-      value: string
+    StatsLake: {
+      catalog: string
+      database: string
+      dataset: string
+      region: string
+      table: string
+      tableBucket: string
+      type: "sst.sst.Linkable"
+      workgroup: string
+    }
+    StatsLakeIngestConfig: {
+      secret: string
+      streamName: string
+      type: "sst.sst.Linkable"
     }
     StatsDatabase: {
       database: string

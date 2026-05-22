@@ -1,66 +1,71 @@
-import { createHash } from "node:crypto"
+import {
+  AthenaClient,
+  GetQueryExecutionCommand,
+  GetQueryResultsCommand,
+  StartQueryExecutionCommand,
+  type Row,
+} from "@aws-sdk/client-athena"
 import { Client } from "@planetscale/database"
 import { sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/planetscale-serverless"
-import { DateTime, Effect, Option, Schema } from "effect"
+import { DateTime, Effect, Schema } from "effect"
 import { Resource } from "sst"
 import { stat } from "../database/schema"
 
-const HONEYCOMB_API_URL = "https://api.honeycomb.io"
-const HONEYCOMB_DATASET = "zen"
-const DAY_SECONDS = 86_400
-const MAX_POLL_ATTEMPTS = 15
+const ATHENA_MAX_POLL_ATTEMPTS = 60
+const ATHENA_PAGE_SIZE = 1000
+const DATALAKE_INGESTION_LAG_MS = 5 * 60_000
 const UPSERT_CHUNK_SIZE = 500
 
-type HoneycombScalar = string | number | boolean | null
-type HoneycombData = Record<string, HoneycombScalar>
-type HoneycombQueryResult = { results: HoneycombData[]; series: { time: Date; data: HoneycombData }[] }
+type AthenaData = Record<string, string>
 type StatRow = typeof stat.$inferInsert
+type StatAggregate = {
+  grain: "day" | "week"
+  period_start: Date
+  period_end: Date
+  dataset: string
+  tier: string
+  provider: string
+  model: string
+  sessions: number
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  reasoning_tokens: number
+  cache_read_tokens: number
+  total_tokens: number
+  input_cost_microcents: number
+  output_cost_microcents: number
+  total_cost_microcents: number
+  avg_duration_ms: number | null
+  p50_duration_ms: number | null
+  p95_duration_ms: number | null
+  avg_ttfb_ms: number | null
+  p50_ttfb_ms: number | null
+  p95_ttfb_ms: number | null
+  avg_output_tps: number | null
+  success_count: number
+  error_count: number
+  sample_count: number
+}
 type SyncResult = { ok: true; rows: number; startedAt: string; periodStart: string; periodEnd: string }
-type SyncError = HoneycombApiError | HoneycombQueryTimeoutError | StatDatabaseError
+type SyncError = AthenaQueryError | AthenaQueryTimeoutError | StatDatabaseError
 
-class HoneycombApiError extends Schema.TaggedErrorClass<HoneycombApiError>()("HoneycombApiError", {
+class AthenaQueryError extends Schema.TaggedErrorClass<AthenaQueryError>()("AthenaQueryError", {
   message: Schema.String,
-  status: Schema.optional(Schema.Number),
+  queryExecutionId: Schema.optional(Schema.String),
   cause: Schema.optional(Schema.Defect),
 }) {}
 
-class HoneycombQueryTimeoutError extends Schema.TaggedErrorClass<HoneycombQueryTimeoutError>()(
-  "HoneycombQueryTimeoutError",
-  {
-    message: Schema.String,
-    resultId: Schema.String,
-  },
-) {}
+class AthenaQueryTimeoutError extends Schema.TaggedErrorClass<AthenaQueryTimeoutError>()("AthenaQueryTimeoutError", {
+  message: Schema.String,
+  queryExecutionId: Schema.String,
+}) {}
 
 class StatDatabaseError extends Schema.TaggedErrorClass<StatDatabaseError>()("StatDatabaseError", {
   message: Schema.String,
   cause: Schema.optional(Schema.Defect),
 }) {}
-
-const decodeJson = Schema.decodeUnknownOption(Schema.UnknownFromJsonString)
-
-const calculations = [
-  { op: "COUNT" },
-  { op: "COUNT_DISTINCT", column: "session" },
-  { op: "SUM", column: "tokens.input" },
-  { op: "SUM", column: "tokens.output" },
-  { op: "SUM", column: "tokens.reasoning" },
-  { op: "SUM", column: "tokens.cache_read" },
-  { op: "SUM", column: "tokens" },
-  { op: "SUM", column: "cost.input.microcents" },
-  { op: "SUM", column: "cost.output.microcents" },
-  { op: "SUM", column: "cost.total.microcents" },
-  { op: "AVG", column: "duration" },
-  { op: "P50", column: "duration" },
-  { op: "P95", column: "duration" },
-  { op: "AVG", column: "time_to_first_byte" },
-  { op: "P50", column: "time_to_first_byte" },
-  { op: "P95", column: "time_to_first_byte" },
-  { op: "AVG", column: "tps.output" },
-  { op: "SUM", column: "stats_success" },
-  { op: "SUM", column: "stats_error" },
-] as const
 
 export function handler(): Promise<SyncResult> {
   return Effect.runPromise(syncStats())
@@ -68,54 +73,17 @@ export function handler(): Promise<SyncResult> {
 
 const syncStats: () => Effect.Effect<SyncResult, SyncError, never> = Effect.fn("StatsCron.sync")(function* () {
   const startedAt = yield* DateTime.nowAsDate
-  const periodEnd = new Date(Math.floor(startedAt.getTime() / 3_600_000) * 3_600_000)
+  const periodEnd = new Date(Math.floor((startedAt.getTime() - DATALAKE_INGESTION_LAG_MS) / 60_000) * 60_000)
   const periodStart = new Date(
     Date.UTC(periodEnd.getUTCFullYear(), periodEnd.getUTCMonth(), periodEnd.getUTCDate() - 6),
   )
 
-  yield* logHoneycombRuntimeCheck()
+  yield* logAthenaRuntimeCheck()
 
-  const result = yield* runHoneycombQuery({
-    start_time: Math.floor(periodStart.getTime() / 1000),
-    end_time: Math.floor(periodEnd.getTime() / 1000),
-    granularity: DAY_SECONDS,
-    breakdowns: ["tier", "provider", "model"],
-    calculations,
-    calculated_fields: [
-      {
-        name: "stats_success",
-        expression: `IF(AND(GTE($status, "200"), LT($status, "400")), 1, 0)`,
-      },
-      {
-        name: "stats_error",
-        expression: `IF(GTE($status, "400"), 1, 0)`,
-      },
-    ],
-    filters: [
-      { column: "event_type", op: "=", value: "completions" },
-      { column: "model", op: "exists" },
-      { column: "user_agent", op: "contains", value: "opencode" },
-    ],
-    filter_combination: "AND",
-    orders: [{ column: "tokens", op: "SUM", order: "descending" }],
-    limit: 1000,
-  })
+  const aggregates = (yield* runAthenaQuery(buildStatsQuery(periodStart, periodEnd))).flatMap(toStatAggregate)
   const rows = rankRows([
-    ...synthesizeAllTierRows(
-      collapseRows(result.results.map((item) => toStatRow("week", periodStart, periodEnd, item))),
-    ),
-    ...synthesizeAllTierRows(
-      collapseRows(
-        result.series.map((item) =>
-          toStatRow(
-            "day",
-            item.time,
-            new Date(Math.min(item.time.getTime() + DAY_SECONDS * 1000, periodEnd.getTime())),
-            item.data,
-          ),
-        ),
-      ),
-    ),
+    ...synthesizeAllTierRows(collapseRows(aggregates.filter((item) => item.grain === "week").map(toStatRow))),
+    ...synthesizeAllTierRows(collapseRows(aggregates.filter((item) => item.grain === "day").map(toStatRow))),
   ])
 
   yield* saveRows(rows)
@@ -139,97 +107,89 @@ const syncStats: () => Effect.Effect<SyncResult, SyncError, never> = Effect.fn("
   }
 })
 
-const runHoneycombQuery: (
-  query: Record<string, unknown>,
-) => Effect.Effect<HoneycombQueryResult, HoneycombApiError | HoneycombQueryTimeoutError, never> = Effect.fn(
-  "StatsCron.runHoneycombQuery",
-)(function* (query: Record<string, unknown>) {
-  const created = asRecord(yield* honeycombRequest(`/1/queries/${HONEYCOMB_DATASET}`, "POST", query))
-  const queryId = asString(created.id)
-  if (!queryId) return yield* new HoneycombApiError({ message: "Honeycomb did not return a query id" })
-
-  const queued = asRecord(
-    yield* honeycombRequest(`/1/query_results/${HONEYCOMB_DATASET}`, "POST", {
-      query_id: queryId,
-      disable_series: false,
-      disable_total_by_aggregate: true,
-      disable_other_by_aggregate: true,
-      limit: 1000,
-    }),
-  )
-  const resultId = asString(queued.id)
-  if (!resultId) return yield* new HoneycombApiError({ message: "Honeycomb did not return a query result id" })
-
-  return yield* pollHoneycombResult(resultId)
-})
-
-const pollHoneycombResult: (
-  resultId: string,
-  attempt?: number,
-) => Effect.Effect<HoneycombQueryResult, HoneycombApiError | HoneycombQueryTimeoutError, never> = Effect.fn(
-  "StatsCron.pollHoneycombResult",
-)(function* (resultId: string, attempt = 0) {
-  if (attempt > 0) yield* Effect.sleep("1000 millis")
-  const result = asRecord(yield* honeycombRequest(`/1/query_results/${HONEYCOMB_DATASET}/${resultId}`, "GET"))
-
-  if (result.complete === true) {
-    const data = asRecord(result.data)
-    return {
-      results: asArray(data.results).map((item) => asData(asRecord(item).data)),
-      series: asArray(data.series).flatMap((item) => {
-        const time = new Date(String(asRecord(item).time ?? ""))
-        if (Number.isNaN(time.getTime())) return []
-        return [{ time, data: asData(asRecord(item).data) }]
-      }),
-    }
-  }
-
-  if (attempt >= MAX_POLL_ATTEMPTS - 1)
-    return yield* new HoneycombQueryTimeoutError({
-      message: `Honeycomb query result ${resultId} did not complete`,
-      resultId,
-    })
-
-  return yield* pollHoneycombResult(resultId, attempt + 1)
-})
-
-const honeycombRequest: (
-  path: string,
-  method: "GET" | "POST",
-  body?: Record<string, unknown>,
-) => Effect.Effect<unknown, HoneycombApiError, never> = Effect.fn("StatsCron.honeycombRequest")(function* (
-  path: string,
-  method: "GET" | "POST",
-  body?: Record<string, unknown>,
-) {
-  const response = yield* Effect.tryPromise({
+const runAthenaQuery: (
+  query: string,
+) => Effect.Effect<AthenaData[], AthenaQueryError | AthenaQueryTimeoutError, never> = Effect.fn(
+  "StatsCron.runAthenaQuery",
+)(function* (query: string) {
+  const client = new AthenaClient({ region: Resource.StatsLake.region })
+  const started = yield* Effect.tryPromise({
     try: () =>
-      fetch(`${HONEYCOMB_API_URL}${path}`, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          "X-Honeycomb-Team": Resource.HONEYCOMB_API_KEY.value,
-        },
-        body: body ? JSON.stringify(body) : undefined,
-      }),
-    catch: (cause) => new HoneycombApiError({ message: `Honeycomb ${method} ${path} request failed`, cause }),
+      client.send(
+        new StartQueryExecutionCommand({
+          QueryString: query,
+          WorkGroup: Resource.StatsLake.workgroup,
+          QueryExecutionContext: {
+            Catalog: Resource.StatsLake.catalog,
+            Database: Resource.StatsLake.database,
+          },
+        }),
+      ),
+    catch: (cause) => new AthenaQueryError({ message: "Failed to start Athena stats query", cause }),
   })
-  const text = yield* Effect.tryPromise({
-    try: () => response.text(),
-    catch: (cause) => new HoneycombApiError({ message: `Honeycomb ${method} ${path} response read failed`, cause }),
-  })
+  const queryExecutionId = started.QueryExecutionId
+  if (!queryExecutionId) return yield* new AthenaQueryError({ message: "Athena did not return a query execution id" })
 
-  if (!response.ok)
-    return yield* new HoneycombApiError({
-      message: `Honeycomb ${method} ${path} failed: ${response.status} ${text.slice(0, 500)}`,
-      status: response.status,
+  yield* pollAthenaQuery(client, queryExecutionId)
+  return yield* getAthenaResults(client, queryExecutionId)
+})
+
+const pollAthenaQuery: (
+  client: AthenaClient,
+  queryExecutionId: string,
+  attempt?: number,
+) => Effect.Effect<void, AthenaQueryError | AthenaQueryTimeoutError, never> = Effect.fn("StatsCron.pollAthenaQuery")(
+  function* (client: AthenaClient, queryExecutionId: string, attempt = 0) {
+    if (attempt > 0) yield* Effect.sleep("2 seconds")
+
+    const result = yield* Effect.tryPromise({
+      try: () => client.send(new GetQueryExecutionCommand({ QueryExecutionId: queryExecutionId })),
+      catch: (cause) => new AthenaQueryError({ message: "Failed to poll Athena stats query", queryExecutionId, cause }),
     })
-  if (!text) return {}
+    const status = result.QueryExecution?.Status
 
-  const parsed = decodeJson(text)
-  if (Option.isNone(parsed))
-    return yield* new HoneycombApiError({ message: `Honeycomb ${method} ${path} returned invalid JSON` })
-  return parsed.value
+    if (status?.State === "SUCCEEDED") return
+    if (status?.State === "FAILED" || status?.State === "CANCELLED")
+      return yield* new AthenaQueryError({
+        message: `Athena stats query ${status.State.toLowerCase()}: ${status.StateChangeReason ?? "unknown reason"}`,
+        queryExecutionId,
+      })
+
+    if (attempt >= ATHENA_MAX_POLL_ATTEMPTS - 1)
+      return yield* new AthenaQueryTimeoutError({
+        message: `Athena stats query ${queryExecutionId} did not complete`,
+        queryExecutionId,
+      })
+
+    return yield* pollAthenaQuery(client, queryExecutionId, attempt + 1)
+  },
+)
+
+const getAthenaResults: (
+  client: AthenaClient,
+  queryExecutionId: string,
+  nextToken?: string,
+) => Effect.Effect<AthenaData[], AthenaQueryError, never> = Effect.fn("StatsCron.getAthenaResults")(function* (
+  client: AthenaClient,
+  queryExecutionId: string,
+  nextToken?: string,
+) {
+  const result = yield* Effect.tryPromise({
+    try: () =>
+      client.send(
+        new GetQueryResultsCommand({
+          QueryExecutionId: queryExecutionId,
+          NextToken: nextToken,
+          MaxResults: ATHENA_PAGE_SIZE,
+        }),
+      ),
+    catch: (cause) => new AthenaQueryError({ message: "Failed to read Athena stats results", queryExecutionId, cause }),
+  })
+  const columns = result.ResultSet?.ResultSetMetadata?.ColumnInfo?.map((item) => item.Name ?? "") ?? []
+  const rows = (result.ResultSet?.Rows ?? []).slice(nextToken ? 0 : 1).map((row) => rowData(columns, row))
+
+  if (!result.NextToken) return rows
+  return [...rows, ...(yield* getAthenaResults(client, queryExecutionId, result.NextToken))]
 })
 
 const saveRows: (rows: StatRow[]) => Effect.Effect<void, StatDatabaseError, never> = Effect.fn("StatsCron.saveRows")(
@@ -286,13 +246,101 @@ const saveRows: (rows: StatRow[]) => Effect.Effect<void, StatDatabaseError, neve
   },
 )
 
-function logHoneycombRuntimeCheck() {
-  return Effect.logInfo("honeycomb api key runtime check").pipe(
+function buildStatsQuery(periodStart: Date, periodEnd: Date) {
+  const periodStartValue = sqlString(periodStart.toISOString())
+  const periodEndValue = sqlString(periodEnd.toISOString())
+  const sourceTable = [Resource.StatsLake.catalog, Resource.StatsLake.database, Resource.StatsLake.table]
+    .map(sqlIdentifier)
+    .join(".")
+  const aggregateColumns = `
+    COUNT(DISTINCT session) AS sessions,
+    COUNT(*) AS requests,
+    COALESCE(SUM(tokens_input), 0) AS input_tokens,
+    COALESCE(SUM(tokens_output), 0) AS output_tokens,
+    COALESCE(SUM(tokens_reasoning), 0) AS reasoning_tokens,
+    COALESCE(SUM(tokens_cache_read), 0) AS cache_read_tokens,
+    COALESCE(SUM(tokens_total), 0) AS total_tokens,
+    COALESCE(SUM(cost_input_microcents), 0) AS input_cost_microcents,
+    COALESCE(SUM(cost_output_microcents), 0) AS output_cost_microcents,
+    COALESCE(SUM(cost_total_microcents), 0) AS total_cost_microcents,
+    AVG(duration_ms) AS avg_duration_ms,
+    approx_percentile(CAST(duration_ms AS double), 0.5) AS p50_duration_ms,
+    approx_percentile(CAST(duration_ms AS double), 0.95) AS p95_duration_ms,
+    AVG(ttfb_ms) AS avg_ttfb_ms,
+    approx_percentile(CAST(ttfb_ms AS double), 0.5) AS p50_ttfb_ms,
+    approx_percentile(CAST(ttfb_ms AS double), 0.95) AS p95_ttfb_ms,
+    AVG(output_tps) AS avg_output_tps,
+    SUM(CASE WHEN status >= 200 AND status < 400 THEN 1 ELSE 0 END) AS success_count,
+    SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END) AS error_count,
+    COUNT(*) AS sample_count`
+
+  return `
+WITH filtered AS (
+  SELECT
+    from_iso8601_timestamp(event_timestamp) AS event_time,
+    COALESCE(NULLIF(tier, ''), 'unknown') AS tier,
+    COALESCE(NULLIF(provider, ''), 'unknown') AS provider,
+    COALESCE(NULLIF(model, ''), 'unknown') AS model,
+    session,
+    status,
+    duration_ms,
+    ttfb_ms,
+    output_tps,
+    tokens_input,
+    tokens_output,
+    tokens_reasoning,
+    tokens_cache_read,
+    tokens_total,
+    cost_input_microcents,
+    cost_output_microcents,
+    cost_total_microcents
+  FROM ${sourceTable}
+  WHERE event_type = 'completions'
+    AND model IS NOT NULL
+    AND model <> ''
+    AND user_agent LIKE '%opencode%'
+    AND event_timestamp >= ${periodStartValue}
+    AND event_timestamp < ${periodEndValue}
+), daily AS (
+  SELECT date_trunc('day', event_time) AS day, *
+  FROM filtered
+)
+SELECT
+  'week' AS grain,
+  ${periodStartValue} AS period_start,
+  ${periodEndValue} AS period_end,
+  ${sqlString(Resource.StatsLake.dataset)} AS dataset,
+  tier,
+  provider,
+  model,
+  ${aggregateColumns}
+FROM filtered
+GROUP BY tier, provider, model
+UNION ALL
+SELECT
+  'day' AS grain,
+  to_iso8601(day) AS period_start,
+  to_iso8601(least(day + INTERVAL '1' DAY, from_iso8601_timestamp(${periodEndValue}))) AS period_end,
+  ${sqlString(Resource.StatsLake.dataset)} AS dataset,
+  tier,
+  provider,
+  model,
+  ${aggregateColumns}
+FROM daily
+GROUP BY day, tier, provider, model
+ORDER BY grain, period_start, total_tokens DESC
+`
+}
+
+function logAthenaRuntimeCheck() {
+  return Effect.logInfo("athena stats runtime check").pipe(
     Effect.annotateLogs({
-      hasHoneycombApiKey: Boolean(Resource.HONEYCOMB_API_KEY.value),
-      honeycombApiKeyLength: Resource.HONEYCOMB_API_KEY.value.length,
-      honeycombApiKeySha256: createHash("sha256").update(Resource.HONEYCOMB_API_KEY.value).digest("hex").slice(0, 12),
-      honeycombApiUrl: HONEYCOMB_API_URL,
+      catalog: Resource.StatsLake.catalog,
+      database: Resource.StatsLake.database,
+      table: Resource.StatsLake.table,
+      workgroup: Resource.StatsLake.workgroup,
+      region: Resource.StatsLake.region,
+      stage: Resource.App.stage,
     }),
   )
 }
@@ -301,38 +349,77 @@ function inserted(column: string) {
   return sql.raw(`values(\`${column}\`)`)
 }
 
-function toStatRow(grain: "day" | "week", periodStart: Date, periodEnd: Date, data: HoneycombData): StatRow {
+function toStatAggregate(data: AthenaData): StatAggregate[] {
+  const grain = data.grain === "day" || data.grain === "week" ? data.grain : undefined
+  const periodStart = new Date(data.period_start ?? "")
+  const periodEnd = new Date(data.period_end ?? "")
+  if (!grain || Number.isNaN(periodStart.getTime()) || Number.isNaN(periodEnd.getTime())) return []
+
+  return [
+    {
+      grain,
+      period_start: periodStart,
+      period_end: periodEnd,
+      dataset: data.dataset || Resource.StatsLake.dataset,
+      tier: normalizeTier(data.tier || "unknown"),
+      provider: data.provider || "unknown",
+      model: data.model || "unknown",
+      sessions: integer(data, "sessions"),
+      requests: integer(data, "requests"),
+      input_tokens: integer(data, "input_tokens"),
+      output_tokens: integer(data, "output_tokens"),
+      reasoning_tokens: integer(data, "reasoning_tokens"),
+      cache_read_tokens: integer(data, "cache_read_tokens"),
+      total_tokens: integer(data, "total_tokens"),
+      input_cost_microcents: integer(data, "input_cost_microcents"),
+      output_cost_microcents: integer(data, "output_cost_microcents"),
+      total_cost_microcents: integer(data, "total_cost_microcents"),
+      avg_duration_ms: nullableNumber(data, "avg_duration_ms"),
+      p50_duration_ms: nullableInteger(data, "p50_duration_ms"),
+      p95_duration_ms: nullableInteger(data, "p95_duration_ms"),
+      avg_ttfb_ms: nullableNumber(data, "avg_ttfb_ms"),
+      p50_ttfb_ms: nullableInteger(data, "p50_ttfb_ms"),
+      p95_ttfb_ms: nullableInteger(data, "p95_ttfb_ms"),
+      avg_output_tps: nullableNumber(data, "avg_output_tps"),
+      success_count: integer(data, "success_count"),
+      error_count: integer(data, "error_count"),
+      sample_count: integer(data, "sample_count"),
+    },
+  ]
+}
+
+function toStatRow(data: StatAggregate): StatRow {
   return {
-    grain,
-    period_start: periodStart,
-    period_end: periodEnd,
-    dataset: HONEYCOMB_DATASET,
-    tier: normalizeTier(asString(data.tier) || "unknown"),
+    grain: data.grain,
+    period_start: data.period_start,
+    period_end: data.period_end,
+    dataset: data.dataset,
+    tier: data.tier,
     client: "all",
     source: "all",
-    provider: asString(data.provider) || "unknown",
-    model: asString(data.model) || "unknown",
+    provider: data.provider,
+    model: data.model,
     provider_model: "",
-    sessions: Math.round(number(data, "COUNT_DISTINCT(session)")),
-    requests: Math.round(number(data, "COUNT")),
-    input_tokens: Math.round(number(data, "SUM(tokens.input)")),
-    output_tokens: Math.round(number(data, "SUM(tokens.output)")),
-    reasoning_tokens: Math.round(number(data, "SUM(tokens.reasoning)")),
-    cache_read_tokens: Math.round(number(data, "SUM(tokens.cache_read)")),
-    total_tokens: Math.round(number(data, "SUM(tokens)")),
-    input_cost_microcents: Math.round(number(data, "SUM(cost.input.microcents)")),
-    output_cost_microcents: Math.round(number(data, "SUM(cost.output.microcents)")),
-    total_cost_microcents: Math.round(number(data, "SUM(cost.total.microcents)")),
-    avg_duration_ms: nullableNumber(data, "AVG(duration)"),
-    p50_duration_ms: nullableInteger(data, "P50(duration)"),
-    p95_duration_ms: nullableInteger(data, "P95(duration)"),
-    avg_ttfb_ms: nullableNumber(data, "AVG(time_to_first_byte)"),
-    p50_ttfb_ms: nullableInteger(data, "P50(time_to_first_byte)"),
-    p95_ttfb_ms: nullableInteger(data, "P95(time_to_first_byte)"),
-    avg_output_tps: nullableNumber(data, "AVG(tps.output)"),
-    success_count: Math.round(number(data, "SUM(stats_success)")),
-    error_count: Math.round(number(data, "SUM(stats_error)")),
-    sample_count: Math.round(number(data, "COUNT")),
+    sessions: data.sessions,
+    requests: data.requests,
+    input_tokens: data.input_tokens,
+    output_tokens: data.output_tokens,
+    reasoning_tokens: data.reasoning_tokens,
+    cache_read_tokens: data.cache_read_tokens,
+    total_tokens: data.total_tokens,
+    input_cost_microcents: data.input_cost_microcents,
+    output_cost_microcents: data.output_cost_microcents,
+    total_cost_microcents: data.total_cost_microcents,
+    avg_duration_ms: data.avg_duration_ms,
+    p50_duration_ms: data.p50_duration_ms,
+    p95_duration_ms: data.p95_duration_ms,
+    avg_ttfb_ms: data.avg_ttfb_ms,
+    p50_ttfb_ms: data.p50_ttfb_ms,
+    p95_ttfb_ms: data.p95_ttfb_ms,
+    avg_output_tps: data.avg_output_tps,
+    success_count: data.success_count,
+    error_count: data.error_count,
+    sample_count: data.sample_count,
   }
 }
 
@@ -452,49 +539,39 @@ function normalizeTier(value: string) {
   return value
 }
 
-function number(data: HoneycombData, key: string) {
-  const value = data[key]
-  if (typeof value === "number") return Number.isFinite(value) ? value : 0
-  if (typeof value === "string") {
-    const parsed = Number(value)
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-  return 0
-}
-
-function nullableNumber(data: HoneycombData, key: string) {
-  const value = number(data, key)
-  if (value === 0 && data[key] === undefined) return null
-  return Number(value.toFixed(2))
-}
-
-function nullableInteger(data: HoneycombData, key: string) {
-  if (data[key] === undefined) return null
+function integer(data: AthenaData, key: string) {
   return Math.round(number(data, key))
 }
 
-function asData(value: unknown): HoneycombData {
+function nullableNumber(data: AthenaData, key: string) {
+  if (data[key] === undefined || data[key] === "") return null
+  return Number(number(data, key).toFixed(2))
+}
+
+function nullableInteger(data: AthenaData, key: string) {
+  if (data[key] === undefined || data[key] === "") return null
+  return Math.round(number(data, key))
+}
+
+function number(data: AthenaData, key: string) {
+  const value = Number(data[key])
+  return Number.isFinite(value) ? value : 0
+}
+
+function rowData(columns: string[], row: Row): AthenaData {
   return Object.fromEntries(
-    Object.entries(asRecord(value)).flatMap(([key, item]) => {
-      if (typeof item === "string" || typeof item === "number" || typeof item === "boolean" || item === null)
-        return [[key, item]]
-      return []
+    columns.flatMap((column, index) => {
+      const value = row.Data?.[index]?.VarCharValue
+      if (!column || value === undefined) return []
+      return [[column, value]]
     }),
   )
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
-  return value as Record<string, unknown>
+function sqlIdentifier(value: string) {
+  return `"${value.replace(/"/g, '""')}"`
 }
 
-function asArray(value: unknown) {
-  if (!Array.isArray(value)) return []
-  return value
-}
-
-function asString(value: unknown) {
-  if (typeof value === "string") return value
-  if (typeof value === "number" || typeof value === "boolean") return String(value)
-  return ""
+function sqlString(value: string) {
+  return `'${value.replace(/'/g, "''")}'`
 }

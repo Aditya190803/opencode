@@ -3,7 +3,7 @@ import { nitro } from "nitro/vite"
 import { defineConfig, type PluginOption } from "vite"
 
 export default defineConfig({
-  plugins: [solidStart() as PluginOption, nitro()],
+  plugins: [solidStart() as PluginOption, nitro({ preset: "aws-lambda" })],
   server: {
     allowedHosts: true,
   },

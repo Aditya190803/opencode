@@ -9,6 +9,7 @@ export default $config({
       home: "cloudflare",
       providers: {
         aws: {
+          version: "7.30.0",
           region: "us-east-1",
           profile: process.env.GITHUB_ACTIONS
             ? undefined

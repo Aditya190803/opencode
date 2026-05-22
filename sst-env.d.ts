@@ -146,6 +146,35 @@ declare module "sst" {
       "url": string
       "username": string
     }
+    "StatsLake": {
+      "catalog": string
+      "database": string
+      "dataset": string
+      "region": string
+      "table": string
+      "tableBucket": string
+      "type": "sst.sst.Linkable"
+      "workgroup": string
+    }
+    "StatsLakeIngest": {
+      "secret": string
+      "type": "sst.sst.Linkable"
+      "url": string
+    }
+    "StatsLakeIngestConfig": {
+      "secret": string
+      "streamName": string
+      "type": "sst.sst.Linkable"
+    }
+    "StatsLakeIngestFunction": {
+      "name": string
+      "type": "sst.aws.Function"
+      "url": string
+    }
+    "StatsLakeIngestSecret": {
+      "type": "random.index/randomPassword.RandomPassword"
+      "value": string
+    }
     "Teams": {
       "type": "sst.cloudflare.SolidStart"
       "url": string

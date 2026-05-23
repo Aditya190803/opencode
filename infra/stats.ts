@@ -363,7 +363,7 @@ const ingestConfig = new sst.Linkable("StatsLakeIngestConfig", {
 })
 
 const ingestFunction = new sst.aws.Function("StatsLakeIngestFunction", {
-  handler: "packages/stats/core/src/ingest.handler",
+  handler: "packages/stats/function/src/ingest.handler",
   runtime: "nodejs22.x",
   timeout: "30 seconds",
   url: true,
@@ -409,7 +409,7 @@ export const app = new sst.aws.SolidStart("Stats", {
 export const statSync = new sst.aws.Cron("StatsSync", {
   schedule: "rate(1 minute)",
   function: {
-    handler: "packages/stats/core/src/cron/stat.handler",
+    handler: "packages/stats/function/src/stat.handler",
     runtime: "nodejs22.x",
     timeout: "5 minutes",
     link: [database, lake],

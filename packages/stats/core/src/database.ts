@@ -31,22 +31,24 @@ export class DatabaseConfig extends Context.Service<DatabaseConfig, DatabaseSett
   )
 }
 
-export interface DatabaseClientValue {
-  readonly schema: typeof schema
-  readonly settings: DatabaseSettings
+function makeDrizzle(settings: DatabaseSettings) {
+  return drizzle({ client: new Client({ url: settings.url }), schema })
 }
 
-export class DatabaseClient extends Context.Service<DatabaseClient, DatabaseClientValue>()(
-  "@opencode/stats/DatabaseClient",
-) {}
+export type Drizzle = ReturnType<typeof makeDrizzle>
 
-const clientLayer = Layer.effect(
-  DatabaseClient,
-  Effect.gen(function* () {
-    const settings = yield* DatabaseConfig
-    return DatabaseClient.of({ schema, settings })
-  }),
-)
+export class DrizzleClient extends Context.Service<DrizzleClient, Drizzle>()("@opencode/stats/DrizzleClient") {
+  static readonly layer: Layer.Layer<DrizzleClient, never, DatabaseConfig> = Layer.effect(
+    DrizzleClient,
+    Effect.map(DatabaseConfig, makeDrizzle),
+  )
+}
+
+export class DatabaseError extends Schema.TaggedErrorClass<DatabaseError>()("DatabaseError", {
+  cause: Schema.Defect,
+}) {}
+
+export const catchDbError = Effect.mapError((cause) => DatabaseError.make({ cause }))
 
 export class MigrationError extends Schema.TaggedErrorClass<MigrationError>()("MigrationError", {
   message: Schema.String,
@@ -74,4 +76,4 @@ export const migrate = Effect.fn("Database.migrate")(function* () {
   )
 })
 
-export const layer = clientLayer.pipe(Layer.provideMerge(DatabaseConfig.layer))
+export const layer = Layer.mergeAll(DatabaseConfig.layer, DrizzleClient.layer.pipe(Layer.provide(DatabaseConfig.layer)))

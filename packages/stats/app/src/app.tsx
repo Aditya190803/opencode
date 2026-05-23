@@ -8,7 +8,7 @@ function AppMeta() {
   return (
     <>
       <Title>opencode stats</Title>
-      <Meta name="description" content="OpenCode usage and rankings." />
+      <Meta name="description" content="OpenCode usage and stats." />
     </>
   )
 }

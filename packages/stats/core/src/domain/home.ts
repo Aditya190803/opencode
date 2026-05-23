@@ -1,30 +1,6 @@
-import { Client } from "@planetscale/database"
-import { and, asc, eq } from "drizzle-orm"
-import { drizzle } from "drizzle-orm/planetscale-serverless"
-import { Effect, Schema } from "effect"
-import { DatabaseConfig } from "../database"
-import { modelStat } from "../database/schema"
-
-export const RankingSnapshotId = Schema.String.check(Schema.isStartsWith("rank_"), Schema.isMaxLength(64)).pipe(
-  Schema.brand("RankingSnapshotId"),
-)
-export type RankingSnapshotId = typeof RankingSnapshotId.Type
-
-export const RankingSource = Schema.String.check(Schema.isTrimmed(), Schema.isNonEmpty(), Schema.isMaxLength(120)).pipe(
-  Schema.brand("RankingSource"),
-)
-export type RankingSource = typeof RankingSource.Type
-
-export const RankingSnapshotPayload = Schema.Record(Schema.String, Schema.Json)
-export type RankingSnapshotPayload = typeof RankingSnapshotPayload.Type
-
-export class RankingSnapshot extends Schema.Class<RankingSnapshot>("RankingSnapshot")({
-  id: RankingSnapshotId,
-  source: RankingSource,
-  payload: RankingSnapshotPayload,
-  capturedAt: Schema.Date,
-  createdAt: Schema.Date,
-}) {}
+import { Effect } from "effect"
+import { DatabaseError } from "../database"
+import { ModelStatRepo, type ModelStatMetric } from "./model"
 
 export type UsageProduct = "All Users" | "Zen" | "Go" | "Enterprise"
 export type TokenProduct = "Zen" | "Go" | "Enterprise"
@@ -34,7 +10,7 @@ export type MarketDay = { date: string; total: number; authors: { author: string
 export type LeaderboardEntry = { model: string; author: string; tokens: number; change: number; rank: number }
 export type TokenCostEntry = { model: string; total: number; input: number; output: number; cached: number }
 export type SessionCostEntry = { model: string; cost: number; tokens: number }
-export type RankingsData = {
+export type StatsHomeData = {
   updatedAt: string | null
   usage: Record<UsageProduct, Record<UsageRange, UsagePoint[]>>
   leaderboard: Record<UsageProduct, Record<UsageRange, LeaderboardEntry[]>>
@@ -43,34 +19,12 @@ export type RankingsData = {
   sessionCost: Record<TokenProduct, SessionCostEntry[]>
 }
 
-export class RankingQueryError extends Schema.TaggedErrorClass<RankingQueryError>()("RankingQueryError", {
-  message: Schema.String,
-  cause: Schema.optional(Schema.Defect),
-}) {}
-
 const DAY_MS = 86_400_000
 const TOKEN_SCALE = 1_000_000
 const DOLLARS_PER_MICROCENT = 1 / 100_000_000
 const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"] as const
 
-type StatQueryRow = {
-  periodStart: Date
-  periodEnd: Date
-  tier: string
-  provider: string
-  model: string
-  sessions: number
-  inputTokens: number
-  outputTokens: number
-  reasoningTokens: number
-  cacheReadTokens: number
-  totalTokens: number
-  inputCostMicrocents: number
-  outputCostMicrocents: number
-  totalCostMicrocents: number
-}
-
-type StatMetricRow = Omit<StatQueryRow, "periodStart" | "periodEnd"> & {
+type StatMetricRow = Omit<ModelStatMetric, "periodStart" | "periodEnd"> & {
   periodStart: number
   periodEnd: number
 }
@@ -91,39 +45,16 @@ type ModelAggregate = {
   totalCostMicrocents: number
 }
 
-export const getRankingsData = Effect.fn("Ranking.getRankingsData")(function* () {
-  const settings = yield* DatabaseConfig
-  const db = drizzle({ client: new Client({ url: settings.url }) })
-  const rows = yield* Effect.tryPromise({
-    try: () =>
-      db
-        .select({
-          periodStart: modelStat.period_start,
-          periodEnd: modelStat.period_end,
-          tier: modelStat.tier,
-          provider: modelStat.provider,
-          model: modelStat.model,
-          sessions: modelStat.sessions,
-          inputTokens: modelStat.input_tokens,
-          outputTokens: modelStat.output_tokens,
-          reasoningTokens: modelStat.reasoning_tokens,
-          cacheReadTokens: modelStat.cache_read_tokens,
-          totalTokens: modelStat.total_tokens,
-          inputCostMicrocents: modelStat.input_cost_microcents,
-          outputCostMicrocents: modelStat.output_cost_microcents,
-          totalCostMicrocents: modelStat.total_cost_microcents,
-        })
-        .from(modelStat)
-        .where(and(eq(modelStat.grain, "day"), eq(modelStat.client, "all"), eq(modelStat.source, "all")))
-        .orderBy(asc(modelStat.period_start)),
-    catch: (cause) => new RankingQueryError({ message: "Failed to load rankings stats", cause }),
-  })
-  return buildRankingsData(rows)
+export const getStatsHomeData: () => Effect.Effect<StatsHomeData, DatabaseError, ModelStatRepo> = Effect.fn(
+  "StatsHome.getData",
+)(function* () {
+  const modelStats = yield* ModelStatRepo
+  return buildStatsHomeData(yield* modelStats.listDaily())
 })
 
-function buildRankingsData(rows: StatQueryRow[]): RankingsData {
+function buildStatsHomeData(rows: ModelStatMetric[]): StatsHomeData {
   const normalized = rows.flatMap(normalizeStatRow)
-  if (normalized.length === 0) return emptyRankingsData()
+  if (normalized.length === 0) return emptyStatsHomeData()
 
   const earliest = Math.min(...normalized.map((row) => row.periodStart))
   const latest = Math.max(...normalized.map((row) => row.periodStart))
@@ -147,7 +78,7 @@ function buildRankingsData(rows: StatQueryRow[]): RankingsData {
   }
 }
 
-function emptyRankingsData(): RankingsData {
+function emptyStatsHomeData(): StatsHomeData {
   return {
     updatedAt: null,
     usage: createUsageProductRecord(() => createRangeRecord(() => [])),
@@ -366,7 +297,7 @@ function createRangeRecord<T>(value: (range: UsageRange) => T): Record<UsageRang
   }
 }
 
-function normalizeStatRow(row: StatQueryRow): StatMetricRow[] {
+function normalizeStatRow(row: ModelStatMetric): StatMetricRow[] {
   const periodStart = dateTime(row.periodStart)
   const periodEnd = dateTime(row.periodEnd)
   if (!Number.isFinite(periodStart) || !Number.isFinite(periodEnd)) return []

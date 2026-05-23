@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@opencode-ai/stats-core": ["../core/src/index.ts"],
+      "@opencode-ai/stats-core/*": ["../core/src/*"]
+    }
+  },
+  "include": ["src", "../core/src/resource.d.ts"]
+}

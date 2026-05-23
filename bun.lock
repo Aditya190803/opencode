@@ -628,7 +628,6 @@
       "version": "1.14.50",
       "dependencies": {
         "@aws-sdk/client-athena": "3.933.0",
-        "@aws-sdk/client-firehose": "3.933.0",
         "@planetscale/database": "1.19.0",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
@@ -639,6 +638,23 @@
         "@types/node": "catalog:",
         "@typescript/native-preview": "catalog:",
         "drizzle-kit": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
+    "packages/stats/function": {
+      "name": "@opencode-ai/stats-function",
+      "version": "1.14.50",
+      "dependencies": {
+        "@aws-sdk/client-firehose": "3.933.0",
+        "@opencode-ai/stats-core": "workspace:*",
+        "effect": "catalog:",
+        "sst": "4.13.1",
+      },
+      "devDependencies": {
+        "@tsconfig/node22": "catalog:",
+        "@types/bun": "catalog:",
+        "@types/node": "catalog:",
+        "@typescript/native-preview": "catalog:",
         "typescript": "catalog:",
       },
     },
@@ -1633,6 +1649,8 @@
     "@opencode-ai/stats-app": ["@opencode-ai/stats-app@workspace:packages/stats/app"],
 
     "@opencode-ai/stats-core": ["@opencode-ai/stats-core@workspace:packages/stats/core"],
+
+    "@opencode-ai/stats-function": ["@opencode-ai/stats-function@workspace:packages/stats/function"],
 
     "@opencode-ai/storybook": ["@opencode-ai/storybook@workspace:packages/storybook"],
 

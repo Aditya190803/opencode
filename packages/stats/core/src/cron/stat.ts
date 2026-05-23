@@ -10,7 +10,7 @@ import { sql } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/planetscale-serverless"
 import { DateTime, Effect, Schema } from "effect"
 import { Resource } from "sst"
-import { stat } from "../database/schema"
+import { geoStat, modelStat, providerStat } from "../database/schema"
 
 const ATHENA_MAX_POLL_ATTEMPTS = 60
 const ATHENA_PAGE_SIZE = 1000
@@ -18,15 +18,15 @@ const DATALAKE_INGESTION_LAG_MS = 5 * 60_000
 const UPSERT_CHUNK_SIZE = 500
 
 type AthenaData = Record<string, string>
-type StatRow = typeof stat.$inferInsert
-type StatAggregate = {
+type ModelStatRow = typeof modelStat.$inferInsert
+type ProviderStatRow = typeof providerStat.$inferInsert
+type GeoStatRow = typeof geoStat.$inferInsert
+type StatBaseAggregate = {
   grain: "day" | "week"
   period_start: Date
   period_end: Date
   dataset: string
   tier: string
-  provider: string
-  model: string
   sessions: number
   requests: number
   input_tokens: number
@@ -47,6 +47,38 @@ type StatAggregate = {
   success_count: number
   error_count: number
   sample_count: number
+}
+type ModelStatAggregate = StatBaseAggregate & { provider: string; model: string; provider_model: string }
+type ProviderStatAggregate = StatBaseAggregate & { provider: string }
+type GeoStatAggregate = StatBaseAggregate & { country: string; continent: string }
+type StatBaseRow = {
+  grain: string
+  period_start: Date
+  period_end: Date
+  dataset?: string
+  tier?: string
+  client?: string
+  source?: string
+  sessions?: number
+  requests?: number
+  input_tokens?: number
+  output_tokens?: number
+  reasoning_tokens?: number
+  cache_read_tokens?: number
+  total_tokens?: number
+  input_cost_microcents?: number
+  output_cost_microcents?: number
+  total_cost_microcents?: number
+  avg_duration_ms?: number | null
+  p50_duration_ms?: number | null
+  p95_duration_ms?: number | null
+  avg_ttfb_ms?: number | null
+  p50_ttfb_ms?: number | null
+  p95_ttfb_ms?: number | null
+  avg_output_tps?: number | null
+  success_count?: number
+  error_count?: number
+  sample_count?: number
 }
 type SyncResult = { ok: true; rows: number; startedAt: string; periodStart: string; periodEnd: string }
 type SyncError = AthenaQueryError | AthenaQueryTimeoutError | StatDatabaseError
@@ -80,27 +112,63 @@ const syncStats: () => Effect.Effect<SyncResult, SyncError, never> = Effect.fn("
 
   yield* logAthenaRuntimeCheck()
 
-  const aggregates = (yield* runAthenaQuery(buildStatsQuery(periodStart, periodEnd))).flatMap(toStatAggregate)
-  const rows = rankRows([
-    ...synthesizeAllTierRows(collapseRows(aggregates.filter((item) => item.grain === "week").map(toStatRow))),
-    ...synthesizeAllTierRows(collapseRows(aggregates.filter((item) => item.grain === "day").map(toStatRow))),
+  const modelAggregates = (yield* runAthenaQuery(buildStatsQuery(periodStart, periodEnd, "model"))).flatMap(
+    toModelStatAggregate,
+  )
+  const providerAggregates = (yield* runAthenaQuery(buildStatsQuery(periodStart, periodEnd, "provider"))).flatMap(
+    toProviderStatAggregate,
+  )
+  const geoAggregates = (yield* runAthenaQuery(buildStatsQuery(periodStart, periodEnd, "geo"))).flatMap(
+    toGeoStatAggregate,
+  )
+  const modelRows = rankModelRows([
+    ...synthesizeAllTierRows(
+      collapseRows(modelAggregates.filter((item) => item.grain === "week").map(toModelStatRow), modelStatKey),
+      modelStatKey,
+    ),
+    ...synthesizeAllTierRows(
+      collapseRows(modelAggregates.filter((item) => item.grain === "day").map(toModelStatRow), modelStatKey),
+      modelStatKey,
+    ),
+  ])
+  const providerRows = rankRowsWithMarketShare([
+    ...synthesizeAllTierRows(
+      collapseRows(providerAggregates.filter((item) => item.grain === "week").map(toProviderStatRow), providerStatKey),
+      providerStatKey,
+    ),
+    ...synthesizeAllTierRows(
+      collapseRows(providerAggregates.filter((item) => item.grain === "day").map(toProviderStatRow), providerStatKey),
+      providerStatKey,
+    ),
+  ])
+  const geoRows = rankRowsWithMarketShare([
+    ...synthesizeAllTierRows(
+      collapseRows(geoAggregates.filter((item) => item.grain === "week").map(toGeoStatRow), geoStatKey),
+      geoStatKey,
+    ),
+    ...synthesizeAllTierRows(
+      collapseRows(geoAggregates.filter((item) => item.grain === "day").map(toGeoStatRow), geoStatKey),
+      geoStatKey,
+    ),
   ])
 
-  yield* saveRows(rows)
+  yield* saveRows({ modelRows, providerRows, geoRows })
 
   yield* Effect.logInfo("stats sync complete").pipe(
     Effect.annotateLogs({
       startedAt: startedAt.toISOString(),
       periodStart: periodStart.toISOString(),
       periodEnd: periodEnd.toISOString(),
-      rows: rows.length,
+      rows: modelRows.length,
+      providerRows: providerRows.length,
+      geoRows: geoRows.length,
       stage: Resource.App.stage,
     }),
   )
 
   return {
     ok: true,
-    rows: rows.length,
+    rows: modelRows.length,
     startedAt: startedAt.toISOString(),
     periodStart: periodStart.toISOString(),
     periodEnd: periodEnd.toISOString(),
@@ -192,66 +260,175 @@ const getAthenaResults: (
   return [...rows, ...(yield* getAthenaResults(client, queryExecutionId, result.NextToken))]
 })
 
-const saveRows: (rows: StatRow[]) => Effect.Effect<void, StatDatabaseError, never> = Effect.fn("StatsCron.saveRows")(
-  function* (rows: StatRow[]) {
-    const db = drizzle({
-      client: new Client({
-        host: Resource.StatsDatabase.host,
-        username: Resource.StatsDatabase.username,
-        password: Resource.StatsDatabase.password,
+const saveRows: (rows: {
+  modelRows: ModelStatRow[]
+  providerRows: ProviderStatRow[]
+  geoRows: GeoStatRow[]
+}) => Effect.Effect<void, StatDatabaseError, never> = Effect.fn("StatsCron.saveRows")(function* (rows: {
+  modelRows: ModelStatRow[]
+  providerRows: ProviderStatRow[]
+  geoRows: GeoStatRow[]
+}) {
+  const db = drizzle({
+    client: new Client({
+      host: Resource.StatsDatabase.host,
+      username: Resource.StatsDatabase.username,
+      password: Resource.StatsDatabase.password,
+    }),
+  })
+
+  yield* Effect.forEach(
+    chunks(rows.modelRows, UPSERT_CHUNK_SIZE),
+    (chunk) =>
+      Effect.tryPromise({
+        try: () =>
+          db
+            .insert(modelStat)
+            .values(chunk)
+            .onDuplicateKeyUpdate({
+              set: {
+                period_end: inserted("period_end"),
+                provider_model: inserted("provider_model"),
+                sessions: inserted("sessions"),
+                requests: inserted("requests"),
+                input_tokens: inserted("input_tokens"),
+                output_tokens: inserted("output_tokens"),
+                reasoning_tokens: inserted("reasoning_tokens"),
+                cache_read_tokens: inserted("cache_read_tokens"),
+                total_tokens: inserted("total_tokens"),
+                input_cost_microcents: inserted("input_cost_microcents"),
+                output_cost_microcents: inserted("output_cost_microcents"),
+                total_cost_microcents: inserted("total_cost_microcents"),
+                avg_duration_ms: inserted("avg_duration_ms"),
+                p50_duration_ms: inserted("p50_duration_ms"),
+                p95_duration_ms: inserted("p95_duration_ms"),
+                avg_ttfb_ms: inserted("avg_ttfb_ms"),
+                p50_ttfb_ms: inserted("p50_ttfb_ms"),
+                p95_ttfb_ms: inserted("p95_ttfb_ms"),
+                avg_output_tps: inserted("avg_output_tps"),
+                success_count: inserted("success_count"),
+                error_count: inserted("error_count"),
+                sample_count: inserted("sample_count"),
+                rank_by_tokens: inserted("rank_by_tokens"),
+                rank_by_requests: inserted("rank_by_requests"),
+                rank_by_cost: inserted("rank_by_cost"),
+              },
+            }),
+        catch: (cause) => new StatDatabaseError({ message: "Failed to upsert model stats rows", cause }),
       }),
-    })
+    { discard: true },
+  )
 
-    yield* Effect.forEach(
-      chunks(rows, UPSERT_CHUNK_SIZE),
-      (chunk) =>
-        Effect.tryPromise({
-          try: () =>
-            db
-              .insert(stat)
-              .values(chunk)
-              .onDuplicateKeyUpdate({
-                set: {
-                  period_end: inserted("period_end"),
-                  provider_model: inserted("provider_model"),
-                  sessions: inserted("sessions"),
-                  requests: inserted("requests"),
-                  input_tokens: inserted("input_tokens"),
-                  output_tokens: inserted("output_tokens"),
-                  reasoning_tokens: inserted("reasoning_tokens"),
-                  cache_read_tokens: inserted("cache_read_tokens"),
-                  total_tokens: inserted("total_tokens"),
-                  input_cost_microcents: inserted("input_cost_microcents"),
-                  output_cost_microcents: inserted("output_cost_microcents"),
-                  total_cost_microcents: inserted("total_cost_microcents"),
-                  avg_duration_ms: inserted("avg_duration_ms"),
-                  p50_duration_ms: inserted("p50_duration_ms"),
-                  p95_duration_ms: inserted("p95_duration_ms"),
-                  avg_ttfb_ms: inserted("avg_ttfb_ms"),
-                  p50_ttfb_ms: inserted("p50_ttfb_ms"),
-                  p95_ttfb_ms: inserted("p95_ttfb_ms"),
-                  avg_output_tps: inserted("avg_output_tps"),
-                  success_count: inserted("success_count"),
-                  error_count: inserted("error_count"),
-                  sample_count: inserted("sample_count"),
-                  rank_by_tokens: inserted("rank_by_tokens"),
-                  rank_by_requests: inserted("rank_by_requests"),
-                  rank_by_cost: inserted("rank_by_cost"),
-                },
-              }),
-          catch: (cause) => new StatDatabaseError({ message: "Failed to upsert stats rows", cause }),
-        }),
-      { discard: true },
-    )
-  },
-)
+  yield* Effect.forEach(
+    chunks(rows.providerRows, UPSERT_CHUNK_SIZE),
+    (chunk) =>
+      Effect.tryPromise({
+        try: () =>
+          db
+            .insert(providerStat)
+            .values(chunk)
+            .onDuplicateKeyUpdate({
+              set: {
+                period_end: inserted("period_end"),
+                sessions: inserted("sessions"),
+                requests: inserted("requests"),
+                input_tokens: inserted("input_tokens"),
+                output_tokens: inserted("output_tokens"),
+                reasoning_tokens: inserted("reasoning_tokens"),
+                cache_read_tokens: inserted("cache_read_tokens"),
+                total_tokens: inserted("total_tokens"),
+                input_cost_microcents: inserted("input_cost_microcents"),
+                output_cost_microcents: inserted("output_cost_microcents"),
+                total_cost_microcents: inserted("total_cost_microcents"),
+                avg_duration_ms: inserted("avg_duration_ms"),
+                p50_duration_ms: inserted("p50_duration_ms"),
+                p95_duration_ms: inserted("p95_duration_ms"),
+                avg_ttfb_ms: inserted("avg_ttfb_ms"),
+                p50_ttfb_ms: inserted("p50_ttfb_ms"),
+                p95_ttfb_ms: inserted("p95_ttfb_ms"),
+                avg_output_tps: inserted("avg_output_tps"),
+                success_count: inserted("success_count"),
+                error_count: inserted("error_count"),
+                sample_count: inserted("sample_count"),
+                market_share_tokens: inserted("market_share_tokens"),
+                market_share_requests: inserted("market_share_requests"),
+                market_share_sessions: inserted("market_share_sessions"),
+                rank_by_tokens: inserted("rank_by_tokens"),
+                rank_by_requests: inserted("rank_by_requests"),
+                rank_by_sessions: inserted("rank_by_sessions"),
+                rank_by_cost: inserted("rank_by_cost"),
+              },
+            }),
+        catch: (cause) => new StatDatabaseError({ message: "Failed to upsert provider stats rows", cause }),
+      }),
+    { discard: true },
+  )
 
-function buildStatsQuery(periodStart: Date, periodEnd: Date) {
+  yield* Effect.forEach(
+    chunks(rows.geoRows, UPSERT_CHUNK_SIZE),
+    (chunk) =>
+      Effect.tryPromise({
+        try: () =>
+          db
+            .insert(geoStat)
+            .values(chunk)
+            .onDuplicateKeyUpdate({
+              set: {
+                period_end: inserted("period_end"),
+                continent: inserted("continent"),
+                sessions: inserted("sessions"),
+                requests: inserted("requests"),
+                input_tokens: inserted("input_tokens"),
+                output_tokens: inserted("output_tokens"),
+                reasoning_tokens: inserted("reasoning_tokens"),
+                cache_read_tokens: inserted("cache_read_tokens"),
+                total_tokens: inserted("total_tokens"),
+                input_cost_microcents: inserted("input_cost_microcents"),
+                output_cost_microcents: inserted("output_cost_microcents"),
+                total_cost_microcents: inserted("total_cost_microcents"),
+                avg_duration_ms: inserted("avg_duration_ms"),
+                p50_duration_ms: inserted("p50_duration_ms"),
+                p95_duration_ms: inserted("p95_duration_ms"),
+                avg_ttfb_ms: inserted("avg_ttfb_ms"),
+                p50_ttfb_ms: inserted("p50_ttfb_ms"),
+                p95_ttfb_ms: inserted("p95_ttfb_ms"),
+                avg_output_tps: inserted("avg_output_tps"),
+                success_count: inserted("success_count"),
+                error_count: inserted("error_count"),
+                sample_count: inserted("sample_count"),
+                market_share_tokens: inserted("market_share_tokens"),
+                market_share_requests: inserted("market_share_requests"),
+                market_share_sessions: inserted("market_share_sessions"),
+                rank_by_tokens: inserted("rank_by_tokens"),
+                rank_by_requests: inserted("rank_by_requests"),
+                rank_by_sessions: inserted("rank_by_sessions"),
+                rank_by_cost: inserted("rank_by_cost"),
+              },
+            }),
+        catch: (cause) => new StatDatabaseError({ message: "Failed to upsert geo stats rows", cause }),
+      }),
+    { discard: true },
+  )
+})
+
+function buildStatsQuery(periodStart: Date, periodEnd: Date, dimension: "model" | "provider" | "geo") {
   const periodStartValue = sqlString(periodStart.toISOString())
   const periodEndValue = sqlString(periodEnd.toISOString())
   const sourceTable = [Resource.StatsLake.catalog, Resource.StatsLake.database, Resource.StatsLake.table]
     .map(sqlIdentifier)
     .join(".")
+  const dimensionSql = (() => {
+    if (dimension === "model")
+      return {
+        select: "provider, model, COALESCE(MAX(NULLIF(provider_model, '')), '') AS provider_model",
+        groupBy: "provider, model",
+      }
+    if (dimension === "provider") return { select: "provider", groupBy: "provider" }
+    return {
+      select: "country, COALESCE(MAX(NULLIF(continent, '')), '') AS continent",
+      groupBy: "country",
+    }
+  })()
   const aggregateColumns = `
     COUNT(DISTINCT session) AS sessions,
     COUNT(*) AS requests,
@@ -280,7 +457,10 @@ WITH filtered AS (
     from_iso8601_timestamp(event_timestamp) AS event_time,
     COALESCE(NULLIF(tier, ''), 'unknown') AS tier,
     COALESCE(NULLIF(provider, ''), 'unknown') AS provider,
+    COALESCE(NULLIF(provider_model, ''), '') AS provider_model,
     COALESCE(NULLIF(model, ''), 'unknown') AS model,
+    UPPER(COALESCE(NULLIF(cf_country, ''), 'ZZ')) AS country,
+    COALESCE(NULLIF(cf_continent, ''), '') AS continent,
     session,
     status,
     duration_ms,
@@ -311,11 +491,10 @@ SELECT
   ${periodEndValue} AS period_end,
   ${sqlString(Resource.StatsLake.dataset)} AS dataset,
   tier,
-  provider,
-  model,
+  ${dimensionSql.select},
   ${aggregateColumns}
 FROM filtered
-GROUP BY tier, provider, model
+GROUP BY tier, ${dimensionSql.groupBy}
 UNION ALL
 SELECT
   'day' AS grain,
@@ -323,11 +502,10 @@ SELECT
   to_iso8601(least(day + INTERVAL '1' DAY, from_iso8601_timestamp(${periodEndValue}))) AS period_end,
   ${sqlString(Resource.StatsLake.dataset)} AS dataset,
   tier,
-  provider,
-  model,
+  ${dimensionSql.select},
   ${aggregateColumns}
 FROM daily
-GROUP BY day, tier, provider, model
+GROUP BY day, tier, ${dimensionSql.groupBy}
 ORDER BY grain, period_start, total_tokens DESC
 `
 }
@@ -349,7 +527,32 @@ function inserted(column: string) {
   return sql.raw(`values(\`${column}\`)`)
 }
 
-function toStatAggregate(data: AthenaData): StatAggregate[] {
+function toModelStatAggregate(data: AthenaData): ModelStatAggregate[] {
+  return toStatBaseAggregate(data).flatMap((base) => [
+    {
+      ...base,
+      provider: data.provider || "unknown",
+      model: data.model || "unknown",
+      provider_model: data.provider_model || "",
+    },
+  ])
+}
+
+function toProviderStatAggregate(data: AthenaData): ProviderStatAggregate[] {
+  return toStatBaseAggregate(data).flatMap((base) => [{ ...base, provider: data.provider || "unknown" }])
+}
+
+function toGeoStatAggregate(data: AthenaData): GeoStatAggregate[] {
+  return toStatBaseAggregate(data).flatMap((base) => [
+    {
+      ...base,
+      country: normalizeCountry(data.country),
+      continent: data.continent || "",
+    },
+  ])
+}
+
+function toStatBaseAggregate(data: AthenaData): StatBaseAggregate[] {
   const grain = data.grain === "day" || data.grain === "week" ? data.grain : undefined
   const periodStart = new Date(data.period_start ?? "")
   const periodEnd = new Date(data.period_end ?? "")
@@ -362,8 +565,6 @@ function toStatAggregate(data: AthenaData): StatAggregate[] {
       period_end: periodEnd,
       dataset: data.dataset || Resource.StatsLake.dataset,
       tier: normalizeTier(data.tier || "unknown"),
-      provider: data.provider || "unknown",
-      model: data.model || "unknown",
       sessions: integer(data, "sessions"),
       requests: integer(data, "requests"),
       input_tokens: integer(data, "input_tokens"),
@@ -388,7 +589,31 @@ function toStatAggregate(data: AthenaData): StatAggregate[] {
   ]
 }
 
-function toStatRow(data: StatAggregate): StatRow {
+function toModelStatRow(data: ModelStatAggregate): ModelStatRow {
+  return {
+    ...toStatBaseRow(data),
+    provider: data.provider,
+    model: data.model,
+    provider_model: data.provider_model,
+  }
+}
+
+function toProviderStatRow(data: ProviderStatAggregate): ProviderStatRow {
+  return {
+    ...toStatBaseRow(data),
+    provider: data.provider,
+  }
+}
+
+function toGeoStatRow(data: GeoStatAggregate): GeoStatRow {
+  return {
+    ...toStatBaseRow(data),
+    country: data.country,
+    continent: data.continent,
+  }
+}
+
+function toStatBaseRow(data: StatBaseAggregate) {
   return {
     grain: data.grain,
     period_start: data.period_start,
@@ -397,9 +622,6 @@ function toStatRow(data: StatAggregate): StatRow {
     tier: data.tier,
     client: "all",
     source: "all",
-    provider: data.provider,
-    model: data.model,
-    provider_model: "",
     sessions: data.sessions,
     requests: data.requests,
     input_tokens: data.input_tokens,
@@ -423,19 +645,18 @@ function toStatRow(data: StatAggregate): StatRow {
   }
 }
 
-function synthesizeAllTierRows(rows: StatRow[]) {
+function synthesizeAllTierRows<T extends StatBaseRow>(rows: T[], dimensionKey: (row: T) => string) {
   return [
     ...rows,
     ...Object.values(
-      rows.reduce<Record<string, StatRow>>((result, row) => {
+      rows.reduce<Record<string, T>>((result, row) => {
         const key = [
           row.grain,
           row.period_start.toISOString(),
           row.dataset,
           row.client,
           row.source,
-          row.provider,
-          row.model,
+          dimensionKey(row),
         ].join("\u0000")
         result[key] = result[key] ? combineRows(result[key], row) : { ...row, tier: "all" }
         return result
@@ -444,9 +665,9 @@ function synthesizeAllTierRows(rows: StatRow[]) {
   ]
 }
 
-function collapseRows(rows: StatRow[]) {
+function collapseRows<T extends StatBaseRow>(rows: T[], dimensionKey: (row: T) => string) {
   return Object.values(
-    rows.reduce<Record<string, StatRow>>((result, row) => {
+    rows.reduce<Record<string, T>>((result, row) => {
       const key = [
         row.grain,
         row.period_start.toISOString(),
@@ -454,8 +675,7 @@ function collapseRows(rows: StatRow[]) {
         row.tier,
         row.client,
         row.source,
-        row.provider,
-        row.model,
+        dimensionKey(row),
       ].join("\u0000")
       result[key] = result[key] ? combineRows(result[key], row) : row
       return result
@@ -463,7 +683,7 @@ function collapseRows(rows: StatRow[]) {
   )
 }
 
-function combineRows(left: StatRow, right: StatRow): StatRow {
+function combineRows<T extends StatBaseRow>(left: T, right: T): T {
   return {
     ...left,
     period_end: right.period_end > left.period_end ? right.period_end : left.period_end,
@@ -490,12 +710,10 @@ function combineRows(left: StatRow, right: StatRow): StatRow {
   }
 }
 
-function rankRows(rows: StatRow[]) {
+function rankModelRows(rows: ModelStatRow[]) {
   return Object.values(
-    rows.reduce<Record<string, StatRow[]>>((result, row) => {
-      const key = [row.grain, row.period_start.toISOString(), row.dataset, row.tier, row.client, row.source].join(
-        "\u0000",
-      )
+    rows.reduce<Record<string, ModelStatRow[]>>((result, row) => {
+      const key = statPeriodKey(row)
       result[key] = [...(result[key] ?? []), row]
       return result
     }, {}),
@@ -512,8 +730,57 @@ function rankRows(rows: StatRow[]) {
   })
 }
 
-function rankBy(rows: StatRow[], value: (row: StatRow) => number) {
+function rankRowsWithMarketShare<T extends ProviderStatRow | GeoStatRow>(rows: T[]) {
+  return Object.values(
+    rows.reduce<Record<string, T[]>>((result, row) => {
+      const key = statPeriodKey(row)
+      result[key] = [...(result[key] ?? []), row]
+      return result
+    }, {}),
+  ).flatMap((group) => {
+    const tokens = group.reduce((sum, row) => sum + (row.total_tokens ?? 0), 0)
+    const requests = group.reduce((sum, row) => sum + (row.requests ?? 0), 0)
+    const sessions = group.reduce((sum, row) => sum + (row.sessions ?? 0), 0)
+    const tokenRanks = rankBy(group, (row) => row.total_tokens ?? 0)
+    const requestRanks = rankBy(group, (row) => row.requests ?? 0)
+    const sessionRanks = rankBy(group, (row) => row.sessions ?? 0)
+    const costRanks = rankBy(group, (row) => row.total_cost_microcents ?? 0)
+    return group.map((row) => ({
+      ...row,
+      market_share_tokens: share(row.total_tokens, tokens),
+      market_share_requests: share(row.requests, requests),
+      market_share_sessions: share(row.sessions, sessions),
+      rank_by_tokens: tokenRanks.get(row) ?? null,
+      rank_by_requests: requestRanks.get(row) ?? null,
+      rank_by_sessions: sessionRanks.get(row) ?? null,
+      rank_by_cost: costRanks.get(row) ?? null,
+    }))
+  })
+}
+
+function rankBy<T extends StatBaseRow>(rows: T[], value: (row: T) => number) {
   return new Map(rows.toSorted((a, b) => value(b) - value(a)).map((row, index) => [row, index + 1]))
+}
+
+function statPeriodKey(row: StatBaseRow) {
+  return [row.grain, row.period_start.toISOString(), row.dataset, row.tier, row.client, row.source].join("\u0000")
+}
+
+function modelStatKey(row: ModelStatRow) {
+  return [row.provider, row.model].join("\u0000")
+}
+
+function providerStatKey(row: ProviderStatRow) {
+  return row.provider
+}
+
+function geoStatKey(row: GeoStatRow) {
+  return row.country
+}
+
+function share(value: number | null | undefined, total: number) {
+  if (total <= 0) return null
+  return Number(((value ?? 0) / total).toFixed(6))
 }
 
 function chunks<T>(items: T[], size: number) {
@@ -537,6 +804,11 @@ function weightedAverage(
 function normalizeTier(value: string) {
   if (value === "Paid") return "Zen"
   return value
+}
+
+function normalizeCountry(value: string | undefined) {
+  if (!value || value.length !== 2) return "ZZ"
+  return value.toUpperCase()
 }
 
 function integer(data: AthenaData, key: string) {

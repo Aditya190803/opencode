@@ -3,7 +3,7 @@ import { and, asc, eq } from "drizzle-orm"
 import { drizzle } from "drizzle-orm/planetscale-serverless"
 import { Effect, Schema } from "effect"
 import { DatabaseConfig } from "../database"
-import { stat } from "../database/schema"
+import { modelStat } from "../database/schema"
 
 export const RankingSnapshotId = Schema.String.check(Schema.isStartsWith("rank_"), Schema.isMaxLength(64)).pipe(
   Schema.brand("RankingSnapshotId"),
@@ -98,24 +98,24 @@ export const getRankingsData = Effect.fn("Ranking.getRankingsData")(function* ()
     try: () =>
       db
         .select({
-          periodStart: stat.period_start,
-          periodEnd: stat.period_end,
-          tier: stat.tier,
-          provider: stat.provider,
-          model: stat.model,
-          sessions: stat.sessions,
-          inputTokens: stat.input_tokens,
-          outputTokens: stat.output_tokens,
-          reasoningTokens: stat.reasoning_tokens,
-          cacheReadTokens: stat.cache_read_tokens,
-          totalTokens: stat.total_tokens,
-          inputCostMicrocents: stat.input_cost_microcents,
-          outputCostMicrocents: stat.output_cost_microcents,
-          totalCostMicrocents: stat.total_cost_microcents,
+          periodStart: modelStat.period_start,
+          periodEnd: modelStat.period_end,
+          tier: modelStat.tier,
+          provider: modelStat.provider,
+          model: modelStat.model,
+          sessions: modelStat.sessions,
+          inputTokens: modelStat.input_tokens,
+          outputTokens: modelStat.output_tokens,
+          reasoningTokens: modelStat.reasoning_tokens,
+          cacheReadTokens: modelStat.cache_read_tokens,
+          totalTokens: modelStat.total_tokens,
+          inputCostMicrocents: modelStat.input_cost_microcents,
+          outputCostMicrocents: modelStat.output_cost_microcents,
+          totalCostMicrocents: modelStat.total_cost_microcents,
         })
-        .from(stat)
-        .where(and(eq(stat.grain, "day"), eq(stat.client, "all"), eq(stat.source, "all")))
-        .orderBy(asc(stat.period_start)),
+        .from(modelStat)
+        .where(and(eq(modelStat.grain, "day"), eq(modelStat.client, "all"), eq(modelStat.source, "all")))
+        .orderBy(asc(modelStat.period_start)),
     catch: (cause) => new RankingQueryError({ message: "Failed to load rankings stats", cause }),
   })
   return buildRankingsData(rows)

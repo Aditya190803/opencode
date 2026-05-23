@@ -59,11 +59,11 @@ export default function Rankings() {
                 <SessionCostSection data={rankings().sessionCost} />
                 <ChartSection
                   title="Token by Country"
-                  description="Country-level token data is not present in the stat table yet."
+                  description="Country-level token data is collected in geo_stat; this chart is not wired yet."
                 >
                   <EmptyState
-                    title="No country dimension"
-                    description="Add a country or region column to stat to power this chart."
+                    title="No country chart"
+                    description="Wire geo_stat into the rankings payload to power this chart."
                   />
                 </ChartSection>
                 <Newsletter />
@@ -105,7 +105,7 @@ function RankingsLoading() {
     <>
       <Hero updatedAt={null} />
       <ChartSection title="Usage">
-        <EmptyState title="Loading rankings" description="Reading model aggregates from the stat table." />
+        <EmptyState title="Loading rankings" description="Reading model aggregates from model_stat." />
       </ChartSection>
     </>
   )
@@ -157,7 +157,7 @@ function UsageSection(props: { data: RankingsData["usage"] }) {
     <ChartSection title="Usage">
       <Show
         when={data().some((item) => usageTotal(item) > 0)}
-        fallback={<EmptyState title="No usage data" description="No stat rows matched this product and range." />}
+        fallback={<EmptyState title="No usage data" description="No model_stat rows matched this product and range." />}
       >
         <UsageChart data={data()} />
       </Show>
@@ -401,7 +401,9 @@ function LeaderboardSection(props: { data: RankingsData["leaderboard"] }) {
     >
       <Show
         when={data().length > 0}
-        fallback={<EmptyState title="No leaderboard data" description="No stat rows matched this product and range." />}
+        fallback={
+          <EmptyState title="No leaderboard data" description="No model_stat rows matched this product and range." />
+        }
       >
         <Leaderboard data={data()} />
       </Show>
@@ -479,7 +481,7 @@ function MarketShareSection(props: { data: RankingsData["market"] }) {
     <ChartSection title="Market Share" description="Compare token share by model author.">
       <Show
         when={activeDay()}
-        fallback={<EmptyState title="No market data" description="No stat rows matched this range." />}
+        fallback={<EmptyState title="No market data" description="No model_stat rows matched this range." />}
       >
         {(day) => (
           <>
@@ -576,7 +578,7 @@ function TokenCostSection(props: { data: RankingsData["tokenCost"] }) {
       <Show
         when={data().length > 0}
         fallback={
-          <EmptyState title="No token cost data" description="No cost-bearing stat rows matched this product." />
+          <EmptyState title="No token cost data" description="No cost-bearing model_stat rows matched this product." />
         }
       >
         <TokenCostChart data={data()} activeIndex={selectedIndex()} onActiveIndexChange={setActiveIndex} />
@@ -665,7 +667,10 @@ function SessionCostSection(props: { data: RankingsData["sessionCost"] }) {
       <Show
         when={data().length > 0}
         fallback={
-          <EmptyState title="No session cost data" description="No session-bearing stat rows matched this product." />
+          <EmptyState
+            title="No session cost data"
+            description="No session-bearing model_stat rows matched this product."
+          />
         }
       >
         <SessionCostChart data={data()} activeIndex={selectedIndex()} onActiveIndexChange={setActiveIndex} />

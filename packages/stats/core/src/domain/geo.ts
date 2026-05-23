@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm"
+import { and, asc, eq } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import * as Context from "effect/Context"
 import { DatabaseError, DrizzleClient } from "../database"
@@ -16,9 +16,18 @@ import {
 
 export type GeoStatRow = typeof geoStat.$inferInsert
 export type GeoStatAggregate = StatBaseAggregate & { country: string; continent: string }
+export type GeoStatMetric = {
+  periodStart: Date
+  periodEnd: Date
+  tier: string
+  country: string
+  continent: string
+  totalTokens: number
+}
 
 export declare namespace GeoStatRepo {
   export interface Service {
+    readonly listDaily: () => Effect.Effect<GeoStatMetric[], DatabaseError>
     readonly listByPeriod: (opts: {
       readonly grain: string
       readonly periodStart: Date
@@ -36,6 +45,25 @@ export class GeoStatRepo extends Context.Service<GeoStatRepo, GeoStatRepo.Servic
     GeoStatRepo,
     Effect.gen(function* () {
       const db = yield* DrizzleClient
+
+      const listDaily = Effect.fn("GeoStatRepo.listDaily")(function* () {
+        return yield* Effect.tryPromise({
+          try: () =>
+            db
+              .select({
+                periodStart: geoStat.period_start,
+                periodEnd: geoStat.period_end,
+                tier: geoStat.tier,
+                country: geoStat.country,
+                continent: geoStat.continent,
+                totalTokens: geoStat.total_tokens,
+              })
+              .from(geoStat)
+              .where(and(eq(geoStat.grain, "day"), eq(geoStat.client, "all"), eq(geoStat.source, "all")))
+              .orderBy(asc(geoStat.period_start)),
+          catch: (cause) => DatabaseError.make({ cause }),
+        })
+      })
 
       const listByPeriod = Effect.fn("GeoStatRepo.listByPeriod")(function* (opts: {
         readonly grain: string
@@ -112,7 +140,7 @@ export class GeoStatRepo extends Context.Service<GeoStatRepo, GeoStatRepo.Servic
         )
       })
 
-      return GeoStatRepo.of({ listByPeriod, upsert })
+      return GeoStatRepo.of({ listDaily, listByPeriod, upsert })
     }),
   )
 }

@@ -2,6 +2,7 @@ import "./index.css"
 import { Meta, Title } from "@solidjs/meta"
 import { ProviderIcon } from "@opencode-ai/ui/provider-icon"
 import {
+  type CountryEntry,
   getStatsHomeData,
   type LeaderboardEntry,
   type MarketDay,
@@ -15,12 +16,28 @@ import { createAsync, query } from "@solidjs/router"
 import { scaleBand, scaleLinear } from "d3-scale"
 import { createMemo, createSignal, For, Show, type JSX } from "solid-js"
 import { getRequestEvent } from "solid-js/web"
+import logoDark from "../asset/logo-ornate-dark.svg"
+import logoLight from "../asset/logo-ornate-light.svg"
 
 const products = ["All Users", "Zen", "Go", "Enterprise"] as const
 const tokenProducts = ["Zen", "Go", "Enterprise"] as const
 const ranges = ["1D", "1W", "1M", "3M", "YTD", "ALL"] as const
 const usageColors = ["#ff5d64", "#ff8a00", "#8bef00", "#12c8b3", "#18c7dc", "#6c7dff", "#9d73f7"]
 const marketColors = ["#ed6aff", "#a684ff", "#7c86ff", "#51a2ff", "#00d3f2", "#00d5be", "#00bc7d", "#9ae600", "#ffb900"]
+const countryPositions = [
+  { x: 112, y: 96 },
+  { x: 284, y: 144 },
+  { x: 472, y: 92 },
+  { x: 642, y: 154 },
+  { x: 800, y: 96 },
+  { x: 172, y: 234 },
+  { x: 362, y: 250 },
+  { x: 552, y: 236 },
+  { x: 744, y: 252 },
+  { x: 48, y: 184 },
+  { x: 892, y: 198 },
+  { x: 456, y: 176 },
+] as const
 
 type UsageProduct = (typeof products)[number]
 type TokenProduct = (typeof tokenProducts)[number]
@@ -54,15 +71,7 @@ export default function StatsHome() {
                 <MarketShareSection data={stats().market} />
                 <TokenCostSection data={stats().tokenCost} />
                 <SessionCostSection data={stats().sessionCost} />
-                <ChartSection
-                  title="Token by Country"
-                  description="Country-level token data is collected in geo_stat; this chart is not wired yet."
-                >
-                  <EmptyState
-                    title="No country chart"
-                    description="Wire geo_stat into the stats payload to power this chart."
-                  />
-                </ChartSection>
+                <CountrySection data={stats().country} />
                 <Newsletter />
               </>
             )}
@@ -741,6 +750,126 @@ function formatSessionCost(value: number) {
   return `$${value.toFixed(4)}`
 }
 
+function CountrySection(props: { data: StatsHomeData["country"] }) {
+  const [range, setRange] = createSignal<UsageRange>("1W")
+  const data = createMemo(() => props.data[range()])
+
+  return (
+    <ChartSection title="Token by Country" description="Country-level token totals from geo_stat.">
+      <Show
+        when={data().length > 0}
+        fallback={<EmptyState title="No country data" description="No geo_stat rows matched this range." />}
+      >
+        <CountryChart data={data()} />
+      </Show>
+      <div data-slot="country-footer">
+        <p>
+          <span>[*]</span>
+          <strong>Top countries by tokens</strong>
+        </p>
+        <FilterPills items={ranges} selected={range()} label="Date range" variant="range" onSelect={setRange} />
+      </div>
+    </ChartSection>
+  )
+}
+
+function CountryChart(props: { data: CountryEntry[] }) {
+  const [activeIndex, setActiveIndex] = createSignal(0)
+  const selectedIndex = createMemo(() => Math.min(activeIndex(), Math.max(props.data.length - 1, 0)))
+  const active = createMemo(() => props.data[selectedIndex()])
+  const max = createMemo(() => Math.max(0.0001, ...props.data.map((item) => item.tokens)))
+
+  return (
+    <div data-component="country-map">
+      <svg viewBox="0 0 920 320" role="img" aria-label="Country token share bubble chart">
+        <For each={props.data.slice(0, countryPositions.length)}>
+          {(item, index) => {
+            const position = countryPositions[index()]
+            const radius = 18 + Math.sqrt(item.tokens / max()) * 58
+            return (
+              <g
+                role="button"
+                tabIndex={0}
+                aria-label={`${formatCountry(item.country)} ${formatTokens(item.tokens)}`}
+                data-active={selectedIndex() === index() ? "true" : undefined}
+                onPointerEnter={() => setActiveIndex(index())}
+                onClick={() => setActiveIndex(index())}
+                onFocus={() => setActiveIndex(index())}
+              >
+                <circle cx={position.x} cy={position.y} r={radius} />
+                <text x={position.x} y={position.y + 4} text-anchor="middle">
+                  {item.country}
+                </text>
+              </g>
+            )
+          }}
+        </For>
+      </svg>
+      <Show when={active()}>
+        {(item) => (
+          <div data-component="map-tooltip">
+            <strong>{formatCountry(item().country)}</strong>
+            <span>{item().continent || "Unknown region"}</span>
+            <p>
+              <b>{formatTokens(item().tokens)}</b>
+              <em>{item().share.toFixed(1)}%</em>
+            </p>
+          </div>
+        )}
+      </Show>
+      <CountryList data={props.data.slice(0, 8)} activeIndex={selectedIndex()} onActiveIndexChange={setActiveIndex} />
+    </div>
+  )
+}
+
+function CountryList(props: {
+  data: CountryEntry[]
+  activeIndex: number
+  onActiveIndexChange: (index: number) => void
+}) {
+  return (
+    <ol data-component="country-list">
+      <For each={props.data}>
+        {(item, index) => (
+          <li>
+            <button
+              type="button"
+              data-active={props.activeIndex === index() ? "true" : undefined}
+              onClick={() => props.onActiveIndexChange(index())}
+              onPointerEnter={() => props.onActiveIndexChange(index())}
+            >
+              <span>{String(item.rank).padStart(2, "0")}</span>
+              <strong>{formatCountry(item.country)}</strong>
+              <em>{formatTokens(item.tokens)}</em>
+              <b>{item.share.toFixed(1)}%</b>
+            </button>
+          </li>
+        )}
+      </For>
+    </ol>
+  )
+}
+
+function formatCountry(country: string) {
+  const known: Record<string, string> = {
+    AU: "Australia",
+    BR: "Brazil",
+    CA: "Canada",
+    CN: "China",
+    DE: "Germany",
+    FR: "France",
+    GB: "United Kingdom",
+    IN: "India",
+    JP: "Japan",
+    KR: "South Korea",
+    NL: "Netherlands",
+    SG: "Singapore",
+    US: "United States",
+    ZZ: "Unknown",
+  }
+  return known[country] ?? country
+}
+
 function Newsletter() {
   return (
     <section data-section="newsletter">
@@ -759,13 +888,14 @@ function Newsletter() {
 function Header() {
   return (
     <section data-component="top">
-      <a data-slot="wordmark" href="/">
-        opencode
+      <a data-slot="brand" href="https://opencode.ai/" aria-label="OpenCode home">
+        <img data-slot="logo light" src={logoLight} alt="OpenCode" width="234" height="42" />
+        <img data-slot="logo dark" src={logoDark} alt="OpenCode" width="234" height="42" />
       </a>
       <nav data-component="nav-desktop" aria-label="Main navigation">
         <ul>
           <li>
-            <a href="https://github.com/sst/opencode" target="_blank">
+            <a href="https://github.com/sst/opencode" target="_blank" rel="noreferrer">
               GitHub
             </a>
           </li>
@@ -773,7 +903,26 @@ function Header() {
             <a href="https://opencode.ai/docs">Docs</a>
           </li>
           <li>
-            <a href="/">Stats</a>
+            <a href="https://opencode.ai/zen">Zen</a>
+          </li>
+          <li>
+            <a href="https://opencode.ai/go">Go</a>
+          </li>
+          <li>
+            <a href="https://opencode.ai/enterprise">Enterprise</a>
+          </li>
+          <li>
+            <a href="https://opencode.ai/download" data-slot="cta-button">
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+                <path
+                  d="M12.1875 9.75L9.00001 12.9375L5.8125 9.75M9.00001 2.0625L9 12.375M14.4375 15.9375H3.5625"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="square"
+                />
+              </svg>
+              Download
+            </a>
           </li>
         </ul>
       </nav>
@@ -785,7 +934,7 @@ function Footer() {
   return (
     <footer data-component="footer">
       <div data-slot="cell">
-        <a href="https://github.com/sst/opencode" target="_blank">
+        <a href="https://github.com/sst/opencode" target="_blank" rel="noreferrer">
           GitHub
         </a>
       </div>

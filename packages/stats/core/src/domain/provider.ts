@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm"
+import { and, asc, eq } from "drizzle-orm"
 import { Effect, Layer } from "effect"
 import * as Context from "effect/Context"
 import { DatabaseError, DrizzleClient } from "../database"
@@ -16,9 +16,17 @@ import {
 
 export type ProviderStatRow = typeof providerStat.$inferInsert
 export type ProviderStatAggregate = StatBaseAggregate & { provider: string }
+export type ProviderStatMetric = {
+  periodStart: Date
+  periodEnd: Date
+  tier: string
+  provider: string
+  totalTokens: number
+}
 
 export declare namespace ProviderStatRepo {
   export interface Service {
+    readonly listDaily: () => Effect.Effect<ProviderStatMetric[], DatabaseError>
     readonly listByPeriod: (opts: {
       readonly grain: string
       readonly periodStart: Date
@@ -38,6 +46,24 @@ export class ProviderStatRepo extends Context.Service<ProviderStatRepo, Provider
     ProviderStatRepo,
     Effect.gen(function* () {
       const db = yield* DrizzleClient
+
+      const listDaily = Effect.fn("ProviderStatRepo.listDaily")(function* () {
+        return yield* Effect.tryPromise({
+          try: () =>
+            db
+              .select({
+                periodStart: providerStat.period_start,
+                periodEnd: providerStat.period_end,
+                tier: providerStat.tier,
+                provider: providerStat.provider,
+                totalTokens: providerStat.total_tokens,
+              })
+              .from(providerStat)
+              .where(and(eq(providerStat.grain, "day"), eq(providerStat.client, "all"), eq(providerStat.source, "all")))
+              .orderBy(asc(providerStat.period_start)),
+          catch: (cause) => DatabaseError.make({ cause }),
+        })
+      })
 
       const listByPeriod = Effect.fn("ProviderStatRepo.listByPeriod")(function* (opts: {
         readonly grain: string
@@ -113,7 +139,7 @@ export class ProviderStatRepo extends Context.Service<ProviderStatRepo, Provider
         )
       })
 
-      return ProviderStatRepo.of({ listByPeriod, upsert })
+      return ProviderStatRepo.of({ listDaily, listByPeriod, upsert })
     }),
   )
 }

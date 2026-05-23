@@ -1,6 +1,8 @@
 import { Effect } from "effect"
 import { DatabaseError } from "../database"
+import { GeoStatRepo, type GeoStatMetric } from "./geo"
 import { ModelStatRepo, type ModelStatMetric } from "./model"
+import { ProviderStatRepo, type ProviderStatMetric } from "./provider"
 
 export type UsageProduct = "All Users" | "Zen" | "Go" | "Enterprise"
 export type TokenProduct = "Zen" | "Go" | "Enterprise"
@@ -10,6 +12,7 @@ export type MarketDay = { date: string; total: number; authors: { author: string
 export type LeaderboardEntry = { model: string; author: string; tokens: number; change: number; rank: number }
 export type TokenCostEntry = { model: string; total: number; input: number; output: number; cached: number }
 export type SessionCostEntry = { model: string; cost: number; tokens: number }
+export type CountryEntry = { country: string; continent: string; tokens: number; share: number; rank: number }
 export type StatsHomeData = {
   updatedAt: string | null
   usage: Record<UsageProduct, Record<UsageRange, UsagePoint[]>>
@@ -17,6 +20,7 @@ export type StatsHomeData = {
   market: Record<UsageRange, MarketDay[]>
   tokenCost: Record<TokenProduct, TokenCostEntry[]>
   sessionCost: Record<TokenProduct, SessionCostEntry[]>
+  country: Record<UsageRange, CountryEntry[]>
 }
 
 const DAY_MS = 86_400_000
@@ -25,6 +29,14 @@ const DOLLARS_PER_MICROCENT = 1 / 100_000_000
 const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"] as const
 
 type StatMetricRow = Omit<ModelStatMetric, "periodStart" | "periodEnd"> & {
+  periodStart: number
+  periodEnd: number
+}
+type ProviderMetricRow = Omit<ProviderStatMetric, "periodStart" | "periodEnd"> & {
+  periodStart: number
+  periodEnd: number
+}
+type GeoMetricRow = Omit<GeoStatMetric, "periodStart" | "periodEnd"> & {
   periodStart: number
   periodEnd: number
 }
@@ -45,20 +57,35 @@ type ModelAggregate = {
   totalCostMicrocents: number
 }
 
-export const getStatsHomeData: () => Effect.Effect<StatsHomeData, DatabaseError, ModelStatRepo> = Effect.fn(
-  "StatsHome.getData",
-)(function* () {
+export const getStatsHomeData: () => Effect.Effect<
+  StatsHomeData,
+  DatabaseError,
+  ModelStatRepo | ProviderStatRepo | GeoStatRepo
+> = Effect.fn("StatsHome.getData")(function* () {
   const modelStats = yield* ModelStatRepo
-  return buildStatsHomeData(yield* modelStats.listDaily())
+  const providerStats = yield* ProviderStatRepo
+  const geoStats = yield* GeoStatRepo
+  const [modelRows, providerRows, geoRows] = yield* Effect.all(
+    [modelStats.listDaily(), providerStats.listDaily(), geoStats.listDaily()],
+    { concurrency: "unbounded" },
+  )
+  return buildStatsHomeData(modelRows, providerRows, geoRows)
 })
 
-function buildStatsHomeData(rows: ModelStatMetric[]): StatsHomeData {
-  const normalized = rows.flatMap(normalizeStatRow)
-  if (normalized.length === 0) return emptyStatsHomeData()
+function buildStatsHomeData(
+  modelRows: ModelStatMetric[],
+  providerRows: ProviderStatMetric[],
+  geoRows: GeoStatMetric[],
+): StatsHomeData {
+  const normalized = modelRows.flatMap(normalizeStatRow)
+  const providers = providerRows.flatMap(normalizeProviderRow)
+  const geo = geoRows.flatMap(normalizeGeoRow)
+  const periods = [...normalized, ...providers, ...geo]
+  if (periods.length === 0) return emptyStatsHomeData()
 
-  const earliest = Math.min(...normalized.map((row) => row.periodStart))
-  const latest = Math.max(...normalized.map((row) => row.periodStart))
-  const latestEnd = Math.max(...normalized.map((row) => row.periodEnd))
+  const earliest = Math.min(...periods.map((row) => row.periodStart))
+  const latest = Math.max(...periods.map((row) => row.periodStart))
+  const latestEnd = Math.max(...periods.map((row) => row.periodEnd))
 
   return {
     updatedAt: new Date(latestEnd).toISOString(),
@@ -68,13 +95,14 @@ function buildStatsHomeData(rows: ModelStatMetric[]): StatsHomeData {
     leaderboard: createUsageProductRecord((product) =>
       createRangeRecord((range) => buildLeaderboard(normalized, product, getWindow(range, earliest, latest))),
     ),
-    market: createRangeRecord((range) => buildMarketShare(normalized, range, getWindow(range, earliest, latest))),
+    market: createRangeRecord((range) => buildMarketShare(providers, range, getWindow(range, earliest, latest))),
     tokenCost: createTokenProductRecord((product) =>
       buildTokenCost(normalized, product, getWindow("1W", earliest, latest)),
     ),
     sessionCost: createTokenProductRecord((product) =>
       buildSessionCost(normalized, product, getWindow("1W", earliest, latest)),
     ),
+    country: createRangeRecord((range) => buildCountryStats(geo, getWindow(range, earliest, latest))),
   }
 }
 
@@ -86,6 +114,7 @@ function emptyStatsHomeData(): StatsHomeData {
     market: createRangeRecord(() => []),
     tokenCost: createTokenProductRecord(() => []),
     sessionCost: createTokenProductRecord(() => []),
+    country: createRangeRecord(() => []),
   }
 }
 
@@ -132,7 +161,7 @@ function buildLeaderboard(rows: StatMetricRow[], product: UsageProduct, window: 
     }))
 }
 
-function buildMarketShare(rows: StatMetricRow[], range: UsageRange, window: DateWindow) {
+function buildMarketShare(rows: ProviderMetricRow[], range: UsageRange, window: DateWindow) {
   return createBuckets(window, range).flatMap((bucket) => {
     const total = aggregateByProvider(rowsForProduct(rows, "All Users", bucket.start, bucket.end)).toSorted(
       (a, b) => b.tokens - a.tokens,
@@ -158,6 +187,22 @@ function buildMarketShare(rows: StatMetricRow[], range: UsageRange, window: Date
       },
     ]
   })
+}
+
+function buildCountryStats(rows: GeoMetricRow[], window: DateWindow) {
+  const countries = aggregateByCountry(rowsForProduct(rows, "All Users", window.start, window.end))
+    .filter((item) => item.tokens > 0)
+    .toSorted((a, b) => b.tokens - a.tokens)
+  const totalTokens = countries.reduce((sum, item) => sum + item.tokens, 0)
+  if (totalTokens === 0) return []
+
+  return countries.slice(0, 16).map((item, index) => ({
+    country: item.country,
+    continent: item.continent,
+    tokens: round(item.tokens / 1_000_000_000_000, 4),
+    share: round((item.tokens / totalTokens) * 100, 1),
+    rank: index + 1,
+  }))
 }
 
 function buildTokenCost(rows: StatMetricRow[], product: TokenProduct, window: DateWindow) {
@@ -191,7 +236,12 @@ function buildSessionCost(rows: StatMetricRow[], product: TokenProduct, window: 
     .slice(0, 17)
 }
 
-function rowsForProduct(rows: StatMetricRow[], product: UsageProduct, start: number, end: number) {
+function rowsForProduct<T extends { periodStart: number; tier: string }>(
+  rows: T[],
+  product: UsageProduct,
+  start: number,
+  end: number,
+) {
   const windowRows = rows.filter((row) => row.periodStart >= start && row.periodStart < end)
   if (product !== "All Users") return windowRows.filter((row) => row.tier === product)
 
@@ -210,12 +260,25 @@ function aggregateByModel(rows: StatMetricRow[]) {
   )
 }
 
-function aggregateByProvider(rows: StatMetricRow[]) {
+function aggregateByProvider(rows: ProviderMetricRow[]) {
   return Object.values(
     rows.reduce<Record<string, { provider: string; tokens: number }>>((result, row) => {
       result[row.provider] = {
         provider: row.provider,
         tokens: (result[row.provider]?.tokens ?? 0) + row.totalTokens,
+      }
+      return result
+    }, {}),
+  )
+}
+
+function aggregateByCountry(rows: GeoMetricRow[]) {
+  return Object.values(
+    rows.reduce<Record<string, { country: string; continent: string; tokens: number }>>((result, row) => {
+      result[row.country] = {
+        country: row.country,
+        continent: result[row.country]?.continent || row.continent,
+        tokens: (result[row.country]?.tokens ?? 0) + row.totalTokens,
       }
       return result
     }, {}),
@@ -309,6 +372,37 @@ function normalizeStatRow(row: ModelStatMetric): StatMetricRow[] {
       tier: normalizeTier(row.tier),
       provider: row.provider || "unknown",
       model: row.model || "unknown",
+    },
+  ]
+}
+
+function normalizeProviderRow(row: ProviderStatMetric): ProviderMetricRow[] {
+  const periodStart = dateTime(row.periodStart)
+  const periodEnd = dateTime(row.periodEnd)
+  if (!Number.isFinite(periodStart) || !Number.isFinite(periodEnd)) return []
+  return [
+    {
+      ...row,
+      periodStart,
+      periodEnd,
+      tier: normalizeTier(row.tier),
+      provider: row.provider || "unknown",
+    },
+  ]
+}
+
+function normalizeGeoRow(row: GeoStatMetric): GeoMetricRow[] {
+  const periodStart = dateTime(row.periodStart)
+  const periodEnd = dateTime(row.periodEnd)
+  if (!Number.isFinite(periodStart) || !Number.isFinite(periodEnd)) return []
+  return [
+    {
+      ...row,
+      periodStart,
+      periodEnd,
+      tier: normalizeTier(row.tier),
+      country: row.country || "ZZ",
+      continent: row.continent || "",
     },
   ]
 }

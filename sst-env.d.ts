@@ -26,14 +26,6 @@ declare module "sst" {
     "AuthApi": import("@cloudflare/workers-types").Service
     "AuthStorage": import("@cloudflare/workers-types").KVNamespace
     "Bucket": import("@cloudflare/workers-types").R2Bucket
-    "CLOUDFLARE_API_TOKEN": {
-      "type": "sst.sst.Secret"
-      "value": string
-    }
-    "CLOUDFLARE_DEFAULT_ACCOUNT_ID": {
-      "type": "sst.sst.Secret"
-      "value": string
-    }
     "Console": {
       "type": "sst.cloudflare.SolidStart"
       "url": string

@@ -1,5 +1,6 @@
 import { Config, ConfigProvider, Effect, Layer, Schema } from "effect"
 import * as Context from "effect/Context"
+import { Resource } from "sst"
 
 export class AppConfigValue extends Schema.Class<AppConfigValue>("AppConfigValue")({
   stage: Schema.NonEmptyString,
@@ -9,7 +10,7 @@ export class AppConfigValue extends Schema.Class<AppConfigValue>("AppConfigValue
 const decodeAppConfigValue = Schema.decodeUnknownSync(AppConfigValue)
 
 const config = Config.all({
-  stage: Config.string("SST_STAGE").pipe(Config.withDefault(process.env.NODE_ENV ?? "local")),
+  stage: Config.succeed(Resource.App.stage),
   publicUrl: Config.string("PUBLIC_URL").pipe(Config.withDefault("http://localhost:3000")),
 }).pipe(Config.map(decodeAppConfigValue))
 

@@ -38,7 +38,7 @@ export class Athena extends Context.Service<Athena, Athena.Service>()("@opencode
   static readonly layer: Layer.Layer<Athena> = Layer.effect(
     Athena,
     Effect.sync(() => {
-      const client = new AwsAthenaClient({ region: Resource.StatsLake.region })
+      const client = new AwsAthenaClient({ region: Resource.InferenceEventLake.region })
 
       const query = Effect.fn("Athena.query")(function* (query: string) {
         const started = yield* Effect.tryPromise({
@@ -46,10 +46,10 @@ export class Athena extends Context.Service<Athena, Athena.Service>()("@opencode
             client.send(
               new StartQueryExecutionCommand({
                 QueryString: query,
-                WorkGroup: Resource.StatsLake.workgroup,
+                WorkGroup: Resource.InferenceEventLake.workgroup,
                 QueryExecutionContext: {
-                  Catalog: Resource.StatsLake.catalog,
-                  Database: Resource.StatsLake.database,
+                  Catalog: Resource.InferenceEventLake.catalog,
+                  Database: Resource.InferenceEventLake.database,
                 },
               }),
             ),

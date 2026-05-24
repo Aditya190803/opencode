@@ -2,19 +2,22 @@ import "sst"
 
 declare module "sst" {
   export interface Resource {
-    StatsLake: {
+    InferenceEventLake: {
       catalog: string
       database: string
-      dataset: string
       region: string
       table: string
       tableBucket: string
       type: "sst.sst.Linkable"
       workgroup: string
     }
-    StatsLakeIngestConfig: {
+    InferenceEventLakeIngestConfig: {
       secret: string
       streamName: string
+      type: "sst.sst.Linkable"
+    }
+    StatsSyncConfig: {
+      dataset: string
       type: "sst.sst.Linkable"
     }
     StatsDatabase: {

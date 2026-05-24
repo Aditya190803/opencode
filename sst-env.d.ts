@@ -91,6 +91,34 @@ declare module "sst" {
       "type": "random.index/randomPassword.RandomPassword"
       "value": string
     }
+    "InferenceEventLake": {
+      "catalog": string
+      "database": string
+      "region": string
+      "table": string
+      "tableBucket": string
+      "type": "sst.sst.Linkable"
+      "workgroup": string
+    }
+    "InferenceEventLakeIngest": {
+      "secret": string
+      "type": "sst.sst.Linkable"
+      "url": string
+    }
+    "InferenceEventLakeIngestConfig": {
+      "secret": string
+      "streamName": string
+      "type": "sst.sst.Linkable"
+    }
+    "InferenceEventLakeIngestFunction": {
+      "name": string
+      "type": "sst.aws.Function"
+      "url": string
+    }
+    "InferenceEventLakeIngestSecret": {
+      "type": "random.index/randomPassword.RandomPassword"
+      "value": string
+    }
     "LogProcessor": import("@cloudflare/workers-types").Service
     "R2AccessKey": {
       "type": "sst.sst.Secret"
@@ -138,34 +166,9 @@ declare module "sst" {
       "url": string
       "username": string
     }
-    "StatsLake": {
-      "catalog": string
-      "database": string
+    "StatsSyncConfig": {
       "dataset": string
-      "region": string
-      "table": string
-      "tableBucket": string
       "type": "sst.sst.Linkable"
-      "workgroup": string
-    }
-    "StatsLakeIngest": {
-      "secret": string
-      "type": "sst.sst.Linkable"
-      "url": string
-    }
-    "StatsLakeIngestConfig": {
-      "secret": string
-      "streamName": string
-      "type": "sst.sst.Linkable"
-    }
-    "StatsLakeIngestFunction": {
-      "name": string
-      "type": "sst.aws.Function"
-      "url": string
-    }
-    "StatsLakeIngestSecret": {
-      "type": "random.index/randomPassword.RandomPassword"
-      "value": string
     }
     "Teams": {
       "type": "sst.cloudflare.SolidStart"

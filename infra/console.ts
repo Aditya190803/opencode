@@ -1,7 +1,7 @@
 import { domain } from "./stage"
 import { EMAILOCTOPUS_API_KEY } from "./app"
 import { SECRET } from "./secret"
-import { lakeIngest } from "./stats"
+import { inferenceEventLakeIngest } from "./lake"
 
 ////////////////
 // DATABASE
@@ -241,7 +241,7 @@ const SALESFORCE_INSTANCE_URL = new sst.Secret("SALESFORCE_INSTANCE_URL")
 
 const logProcessor = new sst.cloudflare.Worker("LogProcessor", {
   handler: "packages/console/function/src/log-processor.ts",
-  link: [SECRET.HoneycombApiKey, lakeIngest],
+  link: [SECRET.HoneycombApiKey, inferenceEventLakeIngest],
 })
 
 new sst.cloudflare.x.SolidStart("Console", {

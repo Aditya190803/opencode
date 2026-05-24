@@ -29,6 +29,7 @@ export default $config({
   },
   async run() {
     await import("./infra/app.js")
+    await import("./infra/lake.js")
     const { stat } = await import("./infra/console.js")
     const stats = await import("./infra/stats.js")
     await import("./infra/enterprise.js")

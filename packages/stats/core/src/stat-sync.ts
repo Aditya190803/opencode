@@ -76,11 +76,12 @@ export const syncStats: () => Effect.Effect<
 function logRuntimeCheck() {
   return Effect.logInfo("athena stats runtime check").pipe(
     Effect.annotateLogs({
-      catalog: Resource.StatsLake.catalog,
-      database: Resource.StatsLake.database,
-      table: Resource.StatsLake.table,
-      workgroup: Resource.StatsLake.workgroup,
-      region: Resource.StatsLake.region,
+      catalog: Resource.InferenceEventLake.catalog,
+      database: Resource.InferenceEventLake.database,
+      dataset: Resource.StatsSyncConfig.dataset,
+      table: Resource.InferenceEventLake.table,
+      workgroup: Resource.InferenceEventLake.workgroup,
+      region: Resource.InferenceEventLake.region,
       stage: Resource.App.stage,
     }),
   )

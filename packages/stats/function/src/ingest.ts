@@ -43,7 +43,7 @@ export async function handler(event: FunctionUrlEvent) {
       chunks(
         events.map((item) => ({ Data: Buffer.from(JSON.stringify(item)) })),
         MAX_FIREHOSE_BATCH_SIZE,
-      ).map((batch) => putRecords(Resource.StatsLakeIngestConfig.streamName, batch)),
+      ).map((batch) => putRecords(Resource.InferenceEventLakeIngestConfig.streamName, batch)),
     )
   ).reduce((sum, item) => sum + item, 0)
   if (failed > 0) return response(502, { ok: false, records: events.length, failed })
@@ -78,7 +78,7 @@ function parsePayload(event: FunctionUrlEvent): IngestPayload | undefined {
 
 function isAuthorized(headers: Record<string, string | undefined>) {
   const actual = Buffer.from(headers.authorization ?? headers.Authorization ?? "")
-  const expected = Buffer.from(`Bearer ${Resource.StatsLakeIngestConfig.secret}`)
+  const expected = Buffer.from(`Bearer ${Resource.InferenceEventLakeIngestConfig.secret}`)
   if (actual.length !== expected.length) return false
   return timingSafeEqual(actual, expected)
 }

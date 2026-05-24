@@ -61,11 +61,11 @@ export default {
           },
           body: JSON.stringify(events),
         }),
-        fetch(Resource.StatsLakeIngest.url, {
+        fetch(Resource.InferenceEventLakeIngest.url, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${Resource.StatsLakeIngest.secret}`,
+            Authorization: `Bearer ${Resource.InferenceEventLakeIngest.secret}`,
           },
           body: JSON.stringify({ events: events.map((event) => toLakeEvent(event.time, event.data)) }),
         }),

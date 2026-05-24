@@ -10,7 +10,11 @@ export type StatDimension = "model" | "provider" | "geo"
 export function buildStatsQuery(periodStart: Date, periodEnd: Date, dimension: StatDimension) {
   const periodStartValue = sqlString(periodStart.toISOString())
   const periodEndValue = sqlString(periodEnd.toISOString())
-  const sourceTable = [Resource.StatsLake.catalog, Resource.StatsLake.database, Resource.StatsLake.table]
+  const sourceTable = [
+    Resource.InferenceEventLake.catalog,
+    Resource.InferenceEventLake.database,
+    Resource.InferenceEventLake.table,
+  ]
     .map(sqlIdentifier)
     .join(".")
   const dimensionSql = (() => {
@@ -85,7 +89,7 @@ SELECT
   'week' AS grain,
   ${periodStartValue} AS period_start,
   ${periodEndValue} AS period_end,
-  ${sqlString(Resource.StatsLake.dataset)} AS dataset,
+  ${sqlString(Resource.StatsSyncConfig.dataset)} AS dataset,
   tier,
   ${dimensionSql.select},
   ${aggregateColumns}
@@ -96,7 +100,7 @@ SELECT
   'day' AS grain,
   to_iso8601(day) AS period_start,
   to_iso8601(least(day + INTERVAL '1' DAY, from_iso8601_timestamp(${periodEndValue}))) AS period_end,
-  ${sqlString(Resource.StatsLake.dataset)} AS dataset,
+  ${sqlString(Resource.StatsSyncConfig.dataset)} AS dataset,
   tier,
   ${dimensionSql.select},
   ${aggregateColumns}
@@ -142,7 +146,7 @@ function toStatBaseAggregate(data: AthenaData): StatBaseAggregate[] {
       grain,
       period_start: periodStart,
       period_end: periodEnd,
-      dataset: data.dataset || Resource.StatsLake.dataset,
+      dataset: data.dataset || Resource.StatsSyncConfig.dataset,
       tier: normalizeTier(data.tier || "unknown"),
       sessions: integer(data, "sessions"),
       requests: integer(data, "requests"),

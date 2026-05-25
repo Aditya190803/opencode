@@ -26,7 +26,8 @@
     "@aws-sdk/client-athena": "3.933.0",
     "@planetscale/database": "1.19.0",
     "drizzle-orm": "catalog:",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "sst": "catalog:"
   },
   "devDependencies": {
     "@tsconfig/node22": "catalog:",

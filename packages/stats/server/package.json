@@ -18,7 +18,7 @@
     "@effect/platform-node": "catalog:",
     "@opencode-ai/stats-core": "workspace:*",
     "effect": "catalog:",
-    "sst": "4.13.1"
+    "sst": "catalog:"
   },
   "devDependencies": {
     "@tsconfig/node22": "catalog:",

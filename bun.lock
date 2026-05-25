@@ -23,7 +23,7 @@
         "oxlint-tsgolint": "0.21.0",
         "prettier": "3.6.2",
         "semver": "^7.6.0",
-        "sst": "4.13.1",
+        "sst": "catalog:",
         "turbo": "2.8.13",
       },
     },
@@ -631,6 +631,7 @@
         "@planetscale/database": "1.19.0",
         "drizzle-orm": "catalog:",
         "effect": "catalog:",
+        "sst": "catalog:",
       },
       "devDependencies": {
         "@tsconfig/node22": "catalog:",
@@ -649,7 +650,7 @@
         "@effect/platform-node": "catalog:",
         "@opencode-ai/stats-core": "workspace:*",
         "effect": "catalog:",
-        "sst": "4.13.1",
+        "sst": "catalog:",
       },
       "devDependencies": {
         "@tsconfig/node22": "catalog:",
@@ -838,6 +839,7 @@
     "shiki": "3.20.0",
     "solid-js": "1.9.10",
     "solid-list": "0.3.0",
+    "sst": "4.13.1",
     "tailwindcss": "4.1.11",
     "typescript": "5.8.2",
     "ulid": "3.0.1",

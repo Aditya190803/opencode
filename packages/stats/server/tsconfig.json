@@ -1,17 +1,12 @@
 {
   "$schema": "https://json.schemastore.org/tsconfig",
+  "extends": "@tsconfig/node22/tsconfig.json",
   "compilerOptions": {
-    "target": "ESNext",
     "module": "ESNext",
-    "skipLibCheck": true,
     "moduleResolution": "bundler",
     "strict": true,
     "noEmit": true,
-    "types": ["node"],
-    "paths": {
-      "@opencode-ai/stats-core": ["../core/src/index.ts"],
-      "@opencode-ai/stats-core/*": ["../core/src/*"]
-    }
+    "types": ["bun", "node"]
   },
   "include": ["src", "../core/src/resource.d.ts"]
 }

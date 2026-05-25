@@ -1,3 +1,5 @@
+import { domain } from "./stage"
+
 const current = aws.getCallerIdentityOutput({})
 const partition = aws.getPartitionOutput({})
 const region = aws.getRegionOutput({})
@@ -276,6 +278,9 @@ const firehose = new aws.kinesis.FirehoseDeliveryStream(
   { aliases: [{ name: "StatsLakeFirehose" }], dependsOn: [s3TablesCatalog, inferenceEventTable, firehosePolicy] },
 )
 
+export const lakeVpc = new sst.aws.Vpc("LakeVpc")
+export const lakeCluster = new sst.aws.Cluster("LakeCluster", { vpc: lakeVpc })
+
 export const inferenceEventLake = new sst.Linkable("InferenceEventLake", {
   properties: {
     region: region.region,
@@ -300,11 +305,15 @@ const ingestConfig = new sst.Linkable("InferenceEventLakeIngestConfig", {
   },
 })
 
-const ingestFunction = new sst.aws.Function("InferenceEventLakeIngestFunction", {
-  handler: "packages/stats/function/src/ingest.handler",
-  runtime: "nodejs22.x",
-  timeout: "30 seconds",
-  url: true,
+const ingestService = new sst.aws.Service("InferenceEventLakeIngestService", {
+  cluster: lakeCluster,
+  architecture: "arm64",
+  cpu: "0.5 vCPU",
+  memory: "1 GB",
+  image: {
+    context: ".",
+    dockerfile: "packages/stats/server/Dockerfile",
+  },
   link: [ingestConfig],
   permissions: [
     {
@@ -312,11 +321,49 @@ const ingestFunction = new sst.aws.Function("InferenceEventLakeIngestFunction", 
       resources: [firehose.arn],
     },
   ],
+  scaling: {
+    min: $app.stage === "production" ? 2 : 1,
+    max: $app.stage === "production" ? 32 : 4,
+    cpuUtilization: 60,
+    memoryUtilization: 70,
+  },
+  loadBalancer: {
+    domain: {
+      name: `inference-ingest.${domain}`,
+      dns: sst.cloudflare.dns(),
+    },
+    rules: [
+      { listen: "80/http", redirect: "443/https" },
+      { listen: "443/https", forward: "3000/http" },
+    ],
+    health: {
+      "3000/http": {
+        path: "/ready",
+        successCodes: "200-299",
+      },
+    },
+  },
+  health: {
+    command: [
+      "CMD-SHELL",
+      "bun --eval \"fetch('http://localhost:3000/health').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))\"",
+    ],
+    interval: "30 seconds",
+    retries: 3,
+    startPeriod: "30 seconds",
+    timeout: "5 seconds",
+  },
+  dev: {
+    command: "bun run start",
+    directory: "packages/stats/server",
+    url: "http://localhost:3000",
+  },
+  wait: $app.stage === "production",
 })
 
 export const inferenceEventLakeIngest = new sst.Linkable("InferenceEventLakeIngest", {
   properties: {
-    url: ingestFunction.url,
+    url: ingestService.url,
     secret: ingestSecret.result,
   },
 })

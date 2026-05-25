@@ -11,11 +11,6 @@ declare module "sst" {
       type: "sst.sst.Linkable"
       workgroup: string
     }
-    InferenceEventLakeIngestConfig: {
-      secret: string
-      streamName: string
-      type: "sst.sst.Linkable"
-    }
     StatsSyncConfig: {
       dataset: string
       type: "sst.sst.Linkable"

@@ -641,11 +641,12 @@
         "typescript": "catalog:",
       },
     },
-    "packages/stats/function": {
-      "name": "@opencode-ai/stats-function",
+    "packages/stats/server": {
+      "name": "@opencode-ai/stats-server",
       "version": "1.14.50",
       "dependencies": {
         "@aws-sdk/client-firehose": "3.933.0",
+        "@effect/platform-node": "catalog:",
         "@opencode-ai/stats-core": "workspace:*",
         "effect": "catalog:",
         "sst": "4.13.1",
@@ -1650,7 +1651,7 @@
 
     "@opencode-ai/stats-core": ["@opencode-ai/stats-core@workspace:packages/stats/core"],
 
-    "@opencode-ai/stats-function": ["@opencode-ai/stats-function@workspace:packages/stats/function"],
+    "@opencode-ai/stats-server": ["@opencode-ai/stats-server@workspace:packages/stats/server"],
 
     "@opencode-ai/storybook": ["@opencode-ai/storybook@workspace:packages/storybook"],
 

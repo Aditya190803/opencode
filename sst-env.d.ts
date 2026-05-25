@@ -110,14 +110,17 @@ declare module "sst" {
       "streamName": string
       "type": "sst.sst.Linkable"
     }
-    "InferenceEventLakeIngestFunction": {
-      "name": string
-      "type": "sst.aws.Function"
-      "url": string
-    }
     "InferenceEventLakeIngestSecret": {
       "type": "random.index/randomPassword.RandomPassword"
       "value": string
+    }
+    "InferenceEventLakeIngestService": {
+      "service": string
+      "type": "sst.aws.Service"
+      "url": string
+    }
+    "LakeVpc": {
+      "type": "sst.aws.Vpc"
     }
     "LogProcessor": import("@cloudflare/workers-types").Service
     "R2AccessKey": {
@@ -169,6 +172,10 @@ declare module "sst" {
     "StatsSyncConfig": {
       "dataset": string
       "type": "sst.sst.Linkable"
+    }
+    "StatsSyncService": {
+      "service": string
+      "type": "sst.aws.Service"
     }
     "Teams": {
       "type": "sst.cloudflare.SolidStart"
